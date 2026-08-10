@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!-- 分库表(ds0/ds1)。SQL 里不写库名,分片由 ShardingSphere 按 user_id 改写 -->
+<mapper namespace="com.reservex.mapper.sharding.UserMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.User">
+        <id     property="userId"          column="user_id"/>
+        <result property="email"           column="email"/>
+        <result property="phone"           column="phone"/>
+        <result property="password"        column="password"/>
+        <!-- VARBINARY → byte[]:JDBC 类型必须显式声明,否则默认按字符串处理会破坏密文字节 -->
+        <result property="idCardCiphertext" column="id_card_ciphertext" jdbcType="VARBINARY"/>
+        <result property="idCardKeyId"     column="id_card_key_id"/>
+        <result property="idCardHash"      column="id_card_hash"/>
+        <result property="idCardMasked"    column="id_card_masked"/>
+        <result property="role"            column="role"/>
+        <result property="status"          column="status"/>
+        <result property="createAt"        column="create_at"/>
+        <result property="updateAt"        column="update_at"/>
+    </resultMap>
+
+    <!--
+      超管引导:哨兵 → BCrypt。
+      条件带 password = #{sentinel} 是幂等保证:已引导过或超管已自行改密时 0 行,
+      不会覆盖用户设的密码(08 §4.1 坑 2)。
+      ⚠️ user_id=1 → 1 mod 2 = 1 → ShardingSphere 路由到 ds1。
+      ⚠️ update_at 由应用层按 reservex.zone 传入,不用 SQL NOW():
+         MySQL 容器时区漏配成 UTC 时 NOW() 差 8h,而时间只应有一个来源(08 §7.2)。
+    -->
+    <update id="bootstrapAdminPassword">
+        UPDATE `user`
+        SET `password`  = #{bcrypt},
+            `update_at` = #{updateAt}
+        WHERE `user_id`  = #{userId}
+          AND `password` = #{sentinel}
+    </update>
+
+</mapper>

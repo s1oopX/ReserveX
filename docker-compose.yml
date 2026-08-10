@@ -1,0 +1,143 @@
+# ReserveX 一键起全栈(08 §四)
+# 演示:docker compose up --build   →  http://localhost
+# 重置(改了 DDL 必须):docker compose down -v && docker compose up --build
+#   ⚠️ docker-entrypoint-initdb.d 只在数据目录为空时执行一次,不 down -v 则改了 schema 也不重跑。
+# 注:不写 version: —— Compose v2+ 已废弃该字段,保留会输出 obsolete 警告。
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped                 # §4.3:不配则容器崩了永久不起
+    # §7.2:容器默认 UTC,与 JVM 的 +08:00 差 8h → valid_until / dup TTL 全错
+    command:
+      - "--default-time-zone=+08:00"
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_0900_ai_ci"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      TZ: Asia/Shanghai
+    ports: ["3306:3306"]
+    volumes:
+      # 按文件名字典序执行:先建库建表,再灌种子(§4.1)
+      - ./docker/mysql/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./docker/mysql/02-seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+      # 分库表 DDL 只有一份,由 01-schema.sql 用 SOURCE 引两次(ds0/ds1)。
+      # ⚠️ 必须挂在 initdb.d 之外:放进去会被 entrypoint 当独立脚本执行(没有 USE,建到错的库)
+      - ./docker/mysql/sharded-tables.sql:/opt/reservex/sharded-tables.sql:ro
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # §7.3:桶余量/occupy/dup/slot:full/pending 是**库存真理源**,不是缓存
+    #   noeviction 是硬约束:配成 allkeys-* 会让库存被静默逐出,且没有任何报错
+    #   appendfsync everysec:"最多丢 1s 写"这句诚实口径的量化依据
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD}"
+      - "--appendonly"
+      - "yes"
+      - "--appendfsync"
+      - "everysec"
+      - "--maxmemory"
+      - "1gb"
+      - "--maxmemory-policy"
+      - "noeviction"
+      - "--save"
+      - "900 1"
+    expose: ["6379"]                        # 只在容器网内可见,库存真理源不裸奔在宿主 6379
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rmqnamesrv:
+    image: apache/rocketmq:5.3.1
+    restart: unless-stopped
+    command: sh mqnamesrv
+    expose: ["9876"]
+    environment:
+      TZ: Asia/Shanghai
+
+  rmqbroker:
+    image: apache/rocketmq:5.3.1
+    restart: unless-stopped
+    depends_on: [rmqnamesrv]
+    command: sh mqbroker -n rmqnamesrv:9876 --enable-proxy
+    expose: ["10909", "10911", "8081"]      # proxy 8081,不占宿主 8080
+    environment:
+      TZ: Asia/Shanghai
+
+  # §4.4:一次性建 5 个 topic。autoCreateTopicEnable 默认 true 但队列数只有个位数,
+  #   会把 persistence 的 20 个消费线程卡死在队列数上(现象:线程调大了延迟没降)
+  rmq-init:
+    image: apache/rocketmq:5.3.1
+    depends_on: [rmqbroker]
+    restart: "no"                           # 跑完就该退出;配 unless-stopped 会无限重启并刷满日志
+    entrypoint: ["/bin/sh", "/init/topics.sh"]
+    volumes: ["./docker/rocketmq/topics.sh:/init/topics.sh:ro"]
+
+  # §4.5:前端产物注入命名卷。没有这个服务,Caddy 托管的是空目录 → 首页 404 而接口全正常
+  frontend-build:
+    build: ./frontend
+    restart: "no"
+    # 先删再拷:cp -r 只覆盖同名文件,改名后的旧 hash 资源会永久残留在卷里
+    command: ["sh", "-c", "rm -rf /srv/frontend/* && cp -r /app/dist/. /srv/frontend/"]
+    volumes: ["frontend-dist:/srv/frontend"]
+
+  backend:
+    build: ./backend
+    restart: unless-stopped                 # §7.4 的 ExitOnOutOfMemoryError 依赖它才成立
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rmqbroker: { condition: service_started }
+      rmq-init: { condition: service_completed_successfully }   # topic 先建好再起应用
+    # ⚠️ 不对宿主暴露 8080:Caddy 已占 8080 反代 /api。
+    #    直接暴露会让绕过 Caddy 的 /actuator/* 屏蔽规则成为可能(08 §五 红线 #35)。
+    #    调试需要时用 docker compose exec 或临时加映射。
+    expose: ["8080"]
+    # §7.4:必须 > spring.lifecycle.timeout-per-shutdown-phase(30s)。
+    #   默认 10s 会在 D6 消费者卡在阶段1↔阶段2(跨库无事务保护)时被 SIGKILL
+    stop_grace_period: 45s
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      - TZ=Asia/Shanghai
+      - JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - QQ_SMTP_PASSWORD=${QQ_SMTP_PASSWORD}
+      - AES_KEY=${AES_KEY}
+      - QR_HMAC_KEY=${QR_HMAC_KEY}
+      - ID_HASH_PEPPER=${ID_HASH_PEPPER}
+      - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_INIT_PASSWORD=${ADMIN_INIT_PASSWORD}
+
+  caddy:
+    image: caddy:2.7
+    restart: unless-stopped
+    # ⚠️ 用 8080 会与 backend 冲突,用 80 在 Windows 上常被 Hyper-V 的
+    #    "保留端口区间"(excludedportrange)占用 → bind 时报 access permissions 错。
+    #    演示用 8080 避开两者;生产部署改回 80 时同步改这里。
+    ports: ["8080:80"]
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - frontend-dist:/srv/frontend
+    depends_on:
+      backend: { condition: service_started }
+      frontend-build: { condition: service_completed_successfully }
+    environment:
+      TZ: Asia/Shanghai
+
+volumes:
+  mysql-data:
+  redis-data:
+  frontend-dist:

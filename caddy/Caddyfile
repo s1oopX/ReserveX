@@ -1,0 +1,37 @@
+# ReserveX 边缘层(08 §五)
+# Caddy 只做静态托管 + 反向代理,**不做限流**(无内置令牌桶)——限流落服务层(D4-A)。
+# 指标由 Prometheus 在容器网内直连 backend:8080/actuator/prometheus 抓取,不经 Caddy。
+
+# ⚠️ 端口:演示映射 8080:80(宿主 8080 → 容器 80),避开 Windows Hyper-V 保留端口区间。
+#    生产改回 80 时同步改 docker-compose.yml 的 ports。
+:80 {
+	root * /srv/frontend
+
+	# 用 handle 互斥块强制路由顺序。⚠️ 不能靠"书写顺序":Caddy 默认指令序里
+	# try_files 排在 respond / reverse_proxy 之前,会先把 /actuator/* 与 /api/*
+	# 改写成 /index.html,于是下面的拦截与反代全被绕过 —— 红线 #35 形同虚设。
+	# handle 块互相排斥(首匹配者胜),顺序即代码顺序。
+
+	# 先拒:/actuator/** 一律 404。指标与 env 端点不上公网(红线 #35)
+	handle /actuator/* {
+		respond 404
+	}
+
+	# 再放:/api/** 反代到 backend。
+	handle /api/* {
+		reverse_proxy backend:8080
+	}
+
+	# 兜底:非文件路径回 index.html(React Router 深链刷新)
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
+
+	encode gzip zstd
+
+	log {
+		output stdout
+		format console
+	}
+}

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.ReservationEventMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.ReservationEvent">
+        <id     property="eventId"       column="event_id"/>
+        <result property="reservationNo" column="reservation_no"/>
+        <result property="eventType"     column="event_type"/>
+        <result property="fromStatus"    column="from_status"/>
+        <result property="toStatus"      column="to_status"/>
+        <result property="operatorType"  column="operator_type"/>
+        <result property="operatorId"    column="operator_id"/>
+        <result property="requestId"     column="request_id"/>
+        <result property="eventTime"     column="event_time"/>
+    </resultMap>
+
+    <sql id="Cols">
+        `event_id`, `reservation_no`, `event_type`, `from_status`, `to_status`,
+        `operator_type`, `operator_id`, `request_id`, `event_time`
+    </sql>
+
+    <!--
+      状态迁移事件流水(**业务审计**,不是消息表 —— 消息可靠性靠 state_log + 补偿)。
+      与预约写操作同一个 singleTxManager 事务:落库成功但事件没记上,
+      时间线就断了一格,排查"这笔为什么变成 CANCELLED"时无从下手。
+      ⚠️ request_id 贯穿全链路,是把一次用户点击与它触发的所有事件串起来的唯一线索。
+    -->
+    <insert id="insertIgnore">
+        INSERT IGNORE INTO `reservation_event` (<include refid="Cols"/>)
+        VALUES (#{eventId}, #{reservationNo}, #{eventType}, #{fromStatus}, #{toStatus},
+                #{operatorType}, #{operatorId}, #{requestId}, #{eventTime})
+    </insert>
+
+    <!-- 预约详情页的时间线。正序:先发生的在上,读起来就是事情的经过 -->
+    <select id="selectByReservation" resultMap="BaseResultMap">
+        SELECT <include refid="Cols"/>
+        FROM `reservation_event`
+        WHERE `reservation_no` = #{reservationNo}
+        ORDER BY `event_time`
+    </select>
+
+</mapper>

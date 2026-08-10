@@ -1,0 +1,29 @@
+# ============================================================================
+# prod profile —— 容器内生效(compose 设 SPRING_PROFILES_ACTIVE=prod)
+#
+# 只覆盖"本机 vs 容器网"会变的东西:主机名。其余一律继承 application.yml,
+# 避免同一个值在两个文件里各写一遍(改一处漏一处是配置类缺陷的第一大来源)。
+#
+# ⚠️ 密钥不在这里出现:它们由 compose 从 .env 注入成环境变量,
+#    application.yml 里用 ${AES_KEY} 等占位符读取。yml 里永远不写值。
+# ============================================================================
+spring:
+  data:
+    redis:
+      host: redis
+
+rocketmq:
+  name-server: rmqnamesrv:9876
+
+reservex:
+  datasource:
+    ds0:
+      url: "jdbc:mysql://mysql:3306/reservex_ds0?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
+    ds1:
+      url: "jdbc:mysql://mysql:3306/reservex_ds1?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
+    single:
+      url: "jdbc:mysql://mysql:3306/reservex_single?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
+
+logging:
+  level:
+    com.reservex: INFO

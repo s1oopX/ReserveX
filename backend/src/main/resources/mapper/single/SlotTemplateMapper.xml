@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.SlotTemplateMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.SlotTemplate">
+        <id     property="templateId"       column="template_id"/>
+        <result property="slotHour"         column="slot_hour"/>
+        <result property="durationMin"      column="duration_min"/>
+        <result property="capacity"         column="capacity"/>
+        <result property="bucketCount"      column="bucket_count"/>
+        <result property="releaseOffsetMin" column="release_offset_min"/>
+        <result property="enabled"          column="enabled"/>
+        <result property="createAt"         column="create_at"/>
+        <result property="updateAt"         column="update_at"/>
+        <result property="version"          column="version"/>
+    </resultMap>
+
+    <sql id="Cols">
+        `template_id`, `slot_hour`, `duration_min`, `capacity`, `bucket_count`,
+        `release_offset_min`, `enabled`, `create_at`, `update_at`, `version`
+    </sql>
+
+    <!--
+      生成任务取模板:只取 enabled=1,按 slot_hour 排序。
+      排序不是为了美观:生成顺序稳定,重跑时"跳过了哪些"才可预测,
+      排查"为什么少了一个场次"时能对上日志顺序。
+    -->
+    <select id="selectEnabled" resultMap="BaseResultMap">
+        SELECT <include refid="Cols"/>
+        FROM `slot_template`
+        WHERE `enabled` = 1
+        ORDER BY `slot_hour`
+    </select>
+
+    <!-- 管理端改模板,带 version 乐观锁。
+         ⚠️ bucket_count 能否改由 service 层判断(已有场次放号则禁改),不在 SQL 里拦 -->
+    <update id="casUpdate">
+        UPDATE `slot_template`
+        SET `duration_min`       = #{durationMin},
+            `capacity`           = #{capacity},
+            `bucket_count`       = #{bucketCount},
+            `release_offset_min` = #{releaseOffsetMin},
+            `update_at`          = #{updateAt},
+            `version`            = `version` + 1
+        WHERE `template_id` = #{templateId}
+          AND `version`     = #{version}
+    </update>
+
+    <!-- 停用/启用。停用不删行:历史 slot.template_id 仍指向它 -->
+    <update id="setEnabled">
+        UPDATE `slot_template`
+        SET `enabled`   = #{enabled},
+            `update_at` = #{updateAt},
+            `version`   = `version` + 1
+        WHERE `template_id` = #{templateId}
+          AND `version`     = #{version}
+    </update>
+
+</mapper>

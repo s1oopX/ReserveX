@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  管理端操作审计。只有 resultMap —— 写入走 BaseMapper.insert,无自定义语句。
+  保留本文件是为了让 15 张表的 resultMap 有统一落点:
+  下次给这张表加查询时,人会来这里加,而不是散在别处写注解 SQL。
+-->
+<mapper namespace="com.reservex.mapper.single.AuditLogMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.AuditLog">
+        <id     property="id"           column="id"/>
+        <result property="operatorType" column="operator_type"/>
+        <result property="operatorId"   column="operator_id"/>
+        <result property="action"       column="action"/>
+        <result property="targetType"   column="target_type"/>
+        <result property="targetId"     column="target_id"/>
+        <result property="before"       column="before"/>
+        <result property="after"        column="after"/>
+        <result property="requestId"    column="request_id"/>
+        <result property="createAt"     column="create_at"/>
+    </resultMap>
+
+    <!--
+      审计查询。
+      ⚠️ before/after 是 MySQL 保留字,必须反引号 —— 不加会报语法错误,
+         而错误信息指向 `before` 附近,很容易被当成 MyBatis 的问题去查。
+      ⚠️ 最该查的是 action='DECRYPT_IDCARD':明文身份证在系统里只出现在
+         注册请求体与授权解密两处,这张表是**唯一**能回答"谁看过谁的证件号"的地方。
+    -->
+    <select id="selectByAction" resultMap="BaseResultMap">
+        SELECT `id`, `operator_type`, `operator_id`, `action`, `target_type`,
+               `target_id`, `before`, `after`, `request_id`, `create_at`
+        FROM `audit_log`
+        WHERE `action` = #{action}
+        ORDER BY `create_at` DESC
+        LIMIT #{limit}
+    </select>
+
+</mapper>

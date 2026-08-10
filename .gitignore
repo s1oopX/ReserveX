@@ -1,0 +1,42 @@
+# ---- 密钥:绝不入库(08 §4.2)----
+.env
+
+# ---- Java / Maven ----
+target/
+*.class
+*.jar
+*.war
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+
+# ---- Node / 前端 ----
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# ---- IDE ----
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 日志与临时 ----
+logs/
+*.log
+*.pid
+*.tmp
+
+# ---- 压测产物 ----
+stress-test/tokens.txt
+stress-test/out/

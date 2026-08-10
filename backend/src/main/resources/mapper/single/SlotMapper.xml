@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.SlotMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.Slot">
+        <id     property="slotId"      column="slot_id"/>
+        <result property="templateId"  column="template_id"/>
+        <result property="slotDate"    column="slot_date"/>
+        <result property="slotHour"    column="slot_hour"/>
+        <result property="validUntil"  column="valid_until"/>
+        <result property="durationMin" column="duration_min"/>
+        <result property="capacity"    column="capacity"/>
+        <result property="bucketCount" column="bucket_count"/>
+        <result property="released"    column="released"/>
+        <result property="releaseAt"   column="release_at"/>
+        <result property="version"     column="version"/>
+    </resultMap>
+
+    <sql id="Cols">
+        `slot_id`, `template_id`, `slot_date`, `slot_hour`, `valid_until`,
+        `duration_min`, `capacity`, `bucket_count`, `released`, `release_at`, `version`
+    </sql>
+
+    <!--
+      次日场次生成。靠 uk_date_hour 挡重跑。
+      ⚠️ 必须 IGNORE(或调用方捕获 DuplicateKey 后继续下一个模板):
+         任务中断重跑时若第一个 template 冲突就整批抛异常,
+         后面三个时段的场次会永远生成不出来(00 §6.2·补5 P0-16)。
+      ⚠️ valid_until / release_at 都是 NOT NULL,由调用方按 TimeSupport 算好传入,
+         不在 SQL 里算 —— 时区只应有一个来源。
+    -->
+    <insert id="insertIgnore">
+        INSERT IGNORE INTO `slot` (<include refid="Cols"/>)
+        VALUES (#{slotId}, #{templateId}, #{slotDate}, #{slotHour}, #{validUntil},
+                #{durationMin}, #{capacity}, #{bucketCount}, #{released}, #{releaseAt}, #{version})
+    </insert>
+
+    <!--
+      放号闸门:released 0→1 的 CAS。**必须先成功再跑 10.3 Lua。**
+      10.3 用 SET 覆盖写桶余量,重跑会把已被抢掉的余量写回满值 = 凭空造库存。
+      受影响 0 行即说明已放过号,绝不能继续执行 10.3(04 §四)。
+    -->
+    <update id="casRelease">
+        UPDATE `slot`
+        SET `released` = 1,
+            `version`  = `version` + 1
+        WHERE `slot_id`  = #{slotId}
+          AND `released` = 0
+          AND `version`  = #{version}
+    </update>
+
+    <!--
+      增容:只增不减。减容无法实现 —— 已发出的预约不能撤回,
+      且 Redis 桶余量可能已低于新容量,减了会让 C = A+R+V+X 直接为负。
+      三处必须同步:本列、Redis 逐桶 INCRBY、HSET slot:meta capacity。
+      ⚠️ delta > 0 由 service 层校验后再调用(参数校验不放在 SQL 里 ——
+         放在 SQL 里会让 delta<=0 表现为"0 行受影响",与"并发冲突"混成同一个返回值,
+         调用方无法区分该重试还是该报错)。
+    -->
+    <update id="casIncreaseCapacity">
+        UPDATE `slot`
+        SET `capacity` = `capacity` + #{delta},
+            `version`  = `version` + 1
+        WHERE `slot_id` = #{slotId}
+          AND `version` = #{version}
+    </update>
+
+    <!--
+      到点放号扫描:released=0 且 release_at 已到。
+      ⚠️ now 由应用层按 reservex.zone 传入,**一律不用 SQL NOW()** ——
+         MySQL 容器时区若漏配成 UTC,NOW() 比业务时间早 8 小时,
+         会把次日场次提前 8 小时全放出来,而**不报任何错**(08 §7.2)。
+      ⚠️ 按 release_at 正序:先该放的先放。放号要跑 CAS + 10.3 Lua,
+         乱序时若中途失败,恢复后难判断"哪些已处理"。
+    -->
+    <select id="selectDueForRelease" resultMap="BaseResultMap">
+        SELECT <include refid="Cols"/>
+        FROM `slot`
+        WHERE `released`   = 0
+          AND `release_at` &lt;= #{now}
+        ORDER BY `release_at`
+    </select>
+
+    <!-- 用户端场次列表 / 生成任务查重。走 uk_date_hour 前缀 -->
+    <select id="selectByDate" resultMap="BaseResultMap">
+        SELECT <include refid="Cols"/>
+        FROM `slot`
+        WHERE `slot_date` = #{slotDate}
+        ORDER BY `slot_hour`
+    </select>
+
+</mapper>

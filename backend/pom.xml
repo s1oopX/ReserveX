@@ -1,0 +1,219 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ReserveX backend —— 单进程模块化单体(08 §二 D8)
+  api / worker / reconciler 三个逻辑模块同 jar、同 @SpringBootApplication,
+  靠包边界隔离;v2 拆独立进程只改部署不改代码。
+
+  ⚠️ 版本全部**显式钉死**,不用 LATEST/RELEASE:
+     ShardingSphere / MyBatis-Plus / Sa-Token 三者对 Spring Boot 3 的适配都挑版本,
+     浮动版本会在某次 mvn -U 后突然起不来,且报错指向 Bean 装配而非版本。
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.3.5</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.reservex</groupId>
+  <artifactId>reservex-backend</artifactId>
+  <version>1.0.0</version>
+  <name>reservex-backend</name>
+  <description>湿地公园预约系统 —— 抢号只动 Redis + 普通消息 + 补偿 + 对账(Q1-B)</description>
+
+  <properties>
+    <java.version>21</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+    <mybatis-plus.version>3.5.9</mybatis-plus.version>
+    <shardingsphere.version>5.5.0</shardingsphere.version>
+    <sa-token.version>1.39.0</sa-token.version>
+    <redisson.version>3.34.1</redisson.version>
+    <rocketmq-spring.version>2.3.1</rocketmq-spring.version>
+    <hutool.version>5.8.32</hutool.version>
+    <guava.version>33.3.1-jre</guava.version>
+    <resilience4j.version>2.2.0</resilience4j.version>
+    <easy-captcha.version>1.6.2</easy-captcha.version>
+  </properties>
+
+  <dependencies>
+    <!-- ==================== Web / 校验 / 观测 ==================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <!-- /actuator/prometheus 零代码暴露(08 §6.0)。Caddy 已把 /actuator/* 挡在公网外 -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+
+    <!-- ==================== 数据层 ==================== -->
+    <dependency>
+      <groupId>com.baomidou</groupId>
+      <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+      <version>${mybatis-plus.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.mysql</groupId>
+      <artifactId>mysql-connector-j</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <!-- 分库分表:只覆盖 user / reservation 两张绑定表;单库表走独立 DataSource(03 §1.1) -->
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-jdbc</artifactId>
+      <version>${shardingsphere.version}</version>
+      <exclusions>
+        <!-- ShardingSphere 自带 logback-classic,与 Boot 的版本打架 -->
+        <exclusion>
+          <groupId>ch.qos.logback</groupId>
+          <artifactId>logback-classic</artifactId>
+        </exclusion>
+        <!--
+          ⚠️ 5.5.0 的打包缺陷:shardingsphere-jdbc 把 shardingsphere-test-util
+          声明成了 compile 传递依赖,但那个 artifact **根本没发布到中央仓库** ——
+          不排除则依赖解析直接失败(Could not find artifact ...:shardingsphere-test-util:5.5.0)。
+          它是测试工具类,运行期一行都用不到,排掉无副作用。
+        -->
+        <exclusion>
+          <groupId>org.apache.shardingsphere</groupId>
+          <artifactId>shardingsphere-test-util</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- ==================== 缓存 / 锁 / 限流 ==================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+    <!-- 分布式锁选主 + RRateLimiter + 单飞重建锁 -->
+    <dependency>
+      <groupId>org.redisson</groupId>
+      <artifactId>redisson-spring-boot-starter</artifactId>
+      <version>${redisson.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-starter-data-redis</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <!-- 本地限流第一层(D4-A):RateLimiter.create -->
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>${guava.version}</version>
+    </dependency>
+
+    <!-- ==================== 消息 ==================== -->
+    <dependency>
+      <groupId>org.apache.rocketmq</groupId>
+      <artifactId>rocketmq-spring-boot-starter</artifactId>
+      <version>${rocketmq-spring.version}</version>
+    </dependency>
+
+    <!-- ==================== 鉴权 ==================== -->
+    <dependency>
+      <groupId>cn.dev33</groupId>
+      <artifactId>sa-token-spring-boot3-starter</artifactId>
+      <version>${sa-token.version}</version>
+    </dependency>
+    <!-- access 无状态(JWT 自校验),不能每请求查 Redis:与 D4-A「抢号 2 round-trip」冲突 -->
+    <dependency>
+      <groupId>cn.dev33</groupId>
+      <artifactId>sa-token-jwt</artifactId>
+      <version>${sa-token.version}</version>
+    </dependency>
+    <!-- refresh 白名单存 Redis(要能主动失效:注销/封禁/改密) -->
+    <dependency>
+      <groupId>cn.dev33</groupId>
+      <artifactId>sa-token-redis-jackson</artifactId>
+      <version>${sa-token.version}</version>
+    </dependency>
+
+    <!-- ==================== 稳定性 ==================== -->
+    <!-- 熔断:只熔界外调用(SMTP)。核心链路(Lua/DB CAS)是本地操作不该熔(08 §6.2) -->
+    <dependency>
+      <groupId>io.github.resilience4j</groupId>
+      <artifactId>resilience4j-spring-boot3</artifactId>
+      <version>${resilience4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-aop</artifactId>
+    </dependency>
+
+    <!-- ==================== 工具 ==================== -->
+    <!-- Snowflake / BCrypt / AES-GCM / SHA256 / 脱敏 -->
+    <dependency>
+      <groupId>cn.hutool</groupId>
+      <artifactId>hutool-all</artifactId>
+      <version>${hutool.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-mail</artifactId>
+    </dependency>
+    <!-- 风控触发图形验证码;滑块(AJ-Captcha)更防 OCR 但重,v1 不取 -->
+    <dependency>
+      <groupId>com.github.whvcse</groupId>
+      <artifactId>easy-captcha</artifactId>
+      <version>${easy-captcha.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <optional>true</optional>
+    </dependency>
+
+    <!-- ==================== 测试 ==================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>reservex-backend</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>
+              <groupId>org.projectlombok</groupId>
+              <artifactId>lombok</artifactId>
+            </exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <parameters>true</parameters>
+          <compilerArgs>
+            <arg>-parameters</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

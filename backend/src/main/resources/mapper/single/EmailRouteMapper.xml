@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!-- 单库表(reservex_single),走 singleDataSource + singleTxManager -->
+<mapper namespace="com.reservex.mapper.single.EmailRouteMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.EmailRoute">
+        <id     property="email"    column="email"/>
+        <result property="userId"   column="user_id"/>
+        <result property="createAt" column="create_at"/>
+    </resultMap>
+
+    <!--
+      注册第一步:抢邮箱唯一性。
+      ⚠️ 必须是 INSERT IGNORE,不能"先 select 再 insert" ——
+         并发下两个请求都能通过检查,唯一性只能靠写入本身保证。
+    -->
+    <insert id="insertIgnore">
+        INSERT IGNORE INTO `email_route` (`email`, `user_id`, `create_at`)
+        VALUES (#{email}, #{userId}, #{createAt})
+    </insert>
+
+    <!--
+      注册失败补偿。⚠️ 条件必须带 user_id:只删自己刚写的那行。
+      只按 email 删会在极端交错下删掉别人成功注册的行(03 §八·补)。
+    -->
+    <delete id="deleteByEmailAndUser">
+        DELETE FROM `email_route`
+        WHERE `email`   = #{email}
+          AND `user_id` = #{userId}
+    </delete>
+
+</mapper>

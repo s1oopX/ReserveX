@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.ReconcileLogMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.ReconcileLog">
+        <id     property="id"             column="id"/>
+        <result property="taskType"       column="task_type"/>
+        <result property="period"         column="period"/>
+        <result property="slotId"         column="slot_id"/>
+        <result property="redisOccupied"  column="redis_occupied"/>
+        <result property="dbOccupied"     column="db_occupied"/>
+        <result property="reservationCnt" column="reservation_cnt"/>
+        <result property="diff"           column="diff"/>
+        <result property="fixAction"      column="fix_action"/>
+        <result property="createAt"       column="create_at"/>
+    </resultMap>
+
+    <sql id="Cols">
+        `id`, `task_type`, `period`, `slot_id`, `redis_occupied`,
+        `db_occupied`, `reservation_cnt`, `diff`, `fix_action`, `create_at`
+    </sql>
+
+    <!--
+      记一次对账结果。**必须 INSERT IGNORE**,靠 uk_task_period_slot 挡重跑。
+      ⚠️ 同一任务同周期跑两次(选主失效/人工补跑/调度抖动)时,
+         没有这层保护会把同一份差异记两条 → 看板上"今日差异数"直接翻倍,
+         运维会以为故障在扩大。
+      ⚠️ 用 IGNORE 而非 ON DUPLICATE KEY UPDATE:本表是**流水**不是状态表,
+         同周期的第一次结论就是那个周期的事实;要看修复后的新结论,
+         应当由下一个周期写新行,而不是把历史结论改掉。
+    -->
+    <insert id="insertIgnore">
+        INSERT IGNORE INTO `reconcile_log` (<include refid="Cols"/>)
+        VALUES (#{id}, #{taskType}, #{period}, #{slotId}, #{redisOccupied},
+                #{dbOccupied}, #{reservationCnt}, #{diff}, #{fixAction}, #{createAt})
+    </insert>
+
+    <!--
+      对账中心 Tab 1(07 §4.1)。
+      ⚠️ 判据是 `diff <> 0`,**不是 `diff > 0`** —— 负差(Redis 余量比 DB 该有的多)
+         同样是故障,且更危险:它意味着可能超卖。只看正数会漏掉一半故障。
+      ⚠️ 单次 diff 非零不等于有 bug:对账读 Redis 与读 DB 之间有时间差,
+         正常抢号就会造成瞬时差。真正的判据是**同一 slot 连续多个周期不收敛**,
+         所以这里按 slot_id 一起排序,让同一场次的多期记录挨在一起看。
+    -->
+    <select id="selectWithDiff" resultMap="BaseResultMap">
+        SELECT <include refid="Cols"/>
+        FROM `reconcile_log`
+        WHERE `diff` &lt;&gt; 0
+        <if test="taskType != null and taskType != ''">
+            AND `task_type` = #{taskType}
+        </if>
+        ORDER BY `slot_id`, `create_at` DESC
+        LIMIT #{limit}
+    </select>
+
+</mapper>

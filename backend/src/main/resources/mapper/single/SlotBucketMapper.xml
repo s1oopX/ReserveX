@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.SlotBucketMapper">
+
+    <!-- 复合主键 (slot_id, bucket_no):无 <id>。不能用 selectById / updateById -->
+    <resultMap id="BaseResultMap" type="com.reservex.entity.SlotBucket">
+        <result property="slotId"   column="slot_id"/>
+        <result property="bucketNo" column="bucket_no"/>
+        <result property="total"    column="total"/>
+        <result property="occupied" column="occupied"/>
+    </resultMap>
+
+    <!--
+      放号时批量建桶。
+      ⚠️ total 按余数规则分摊(base=C/n, rem=C%n, 前 rem 个桶各多 1),
+         **由调用方算好传入**。在 SQL 里再算一遍会出现两份规则,
+         改了一处忘另一处 → Σ total ≠ capacity,对账每轮报同一个固定差且查不出原因。
+    -->
+    <insert id="batchInsertIgnore">
+        INSERT IGNORE INTO `slot_bucket` (`slot_id`, `bucket_no`, `total`, `occupied`)
+        VALUES
+        <foreach collection="buckets" item="b" separator=",">
+            (#{b.slotId}, #{b.bucketNo}, #{b.total}, #{b.occupied})
+        </foreach>
+    </insert>
+
+    <!--
+      落库成功后累加占用。只增不减(M1 不返还)。
+      ⚠️ 用 occupied = occupied + 1 而非先读后写:并发落库下读改写会丢更新,
+         而这一列是对账的基准值,错了就查不出真相。
+    -->
+    <update id="incrOccupied">
+        UPDATE `slot_bucket`
+        SET `occupied` = `occupied` + 1
+        WHERE `slot_id`   = #{slotId}
+          AND `bucket_no` = #{bucketNo}
+    </update>
+
+    <!-- 按场次列桶(对账用)走 QueryWrapper:无静默错数据的约束,不值得多一处定义 -->
+
+    <!-- 增容:逐桶加 delta。与 Redis INCRBY、slot.capacity 三处同步 -->
+    <update id="increaseTotal">
+        UPDATE `slot_bucket`
+        SET `total` = `total` + #{delta}
+        WHERE `slot_id`   = #{slotId}
+          AND `bucket_no` = #{bucketNo}
+    </update>
+
+    <!--
+      对账读端(06 §四 库存类):取该 slot 全部桶,算 Σtotal 与 Σoccupied,
+      再与 Redis 侧 MGET 出来的 Σ 余量比。
+      ⚠️ 按 bucket_no 正序返回,好和 Redis 侧按 bucket_count 精确拼出的 key 序列
+         **逐桶对位比**。只比总和会让"两个桶一多一少、和恰好相等"的错溜过去,
+         而这正是选桶路由写错时的典型现象(00 §6.3 纪律⑤:逐位比对真值)。
+    -->
+    <select id="selectBySlot" resultMap="BaseResultMap">
+        SELECT `slot_id`, `bucket_no`, `total`, `occupied`
+        FROM `slot_bucket`
+        WHERE `slot_id` = #{slotId}
+        ORDER BY `bucket_no`
+    </select>
+
+</mapper>

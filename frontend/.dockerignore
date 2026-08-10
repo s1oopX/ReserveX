@@ -1,0 +1,8 @@
+# 别把本机 node_modules 拷进构建上下文:
+# ① 慢(几万个文件);② 可能含平台相关的原生二进制,与 alpine 不兼容,
+#    覆盖掉 npm ci 装出来的正确产物,报错却指向源码
+node_modules
+dist
+.vite
+*.local
+.env

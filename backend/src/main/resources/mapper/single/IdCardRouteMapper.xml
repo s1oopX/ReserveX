@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.IdCardRouteMapper">
+
+    <!-- 复合主键 (id_card_hash, slot_date):无 <id>,全部 <result>。
+         故不能用 selectById / updateById / deleteById -->
+    <resultMap id="BaseResultMap" type="com.reservex.entity.IdCardRoute">
+        <result property="idCardHash"    column="id_card_hash"/>
+        <result property="slotDate"      column="slot_date"/>
+        <result property="reservationNo" column="reservation_no"/>
+        <result property="createAt"      column="create_at"/>
+    </resultMap>
+
+    <!--
+      落库时占配额位。与预约落库在同一个 singleTxManager 事务里。
+      ⚠️ 用 INSERT 而非 INSERT IGNORE:撞主键要抛异常,让消费者走 10.2a 回滚。
+         用 IGNORE 会静默吞掉冲突 —— 配额穿了却无人知晓,
+         而这正是这张表存在的唯一理由。
+    -->
+    <insert id="insertQuota">
+        INSERT INTO `id_card_route` (`id_card_hash`, `slot_date`, `reservation_no`, `create_at`)
+        VALUES (#{idCardHash}, #{slotDate}, #{reservationNo}, #{createAt})
+    </insert>
+
+    <!--
+      10.2a 回滚:释放配额位。
+      ⚠️ 条件必须带 reservation_no:只释放自己占的那个位。
+         只按 (hash, date) 删,会在"同一人当天先取消再重约"的交错下
+         删掉后一笔成功预约的配额位,导致他能约第三次。
+    -->
+    <delete id="releaseQuota">
+        DELETE FROM `id_card_route`
+        WHERE `id_card_hash`   = #{idCardHash}
+          AND `slot_date`      = #{slotDate}
+          AND `reservation_no` = #{reservationNo}
+    </delete>
+
+    <!--
+      ⚠️ 刻意**不提供** selectByHashAndDate 之类的"先查有没有再决定要不要占"方法。
+         配额唯一性只能由 insertQuota 的主键冲突来判定:
+         并发下两个请求都能通过"查了没有"这一步,查询式判断在这里是纯粹的假保护。
+         需要给用户看"今天约过了吗",走他自己的 reservation 列表,不走这张表。
+    -->
+
+</mapper>

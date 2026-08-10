@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!-- 分库表(ds0/ds1),与 user 绑定表 -->
+<mapper namespace="com.reservex.mapper.sharding.ReservationMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.Reservation">
+        <id     property="reservationNo" column="reservation_no"/>
+        <result property="userId"        column="user_id"/>
+        <result property="slotId"        column="slot_id"/>
+        <result property="slotDate"      column="slot_date"/>
+        <result property="bucketNo"      column="bucket_no"/>
+        <result property="idCardHash"    column="id_card_hash"/>
+        <result property="idCardMasked"  column="id_card_masked"/>
+        <result property="status"        column="status"/>
+        <result property="validUntil"    column="valid_until"/>
+        <result property="verifiedAt"    column="verified_at"/>
+        <result property="createAt"      column="create_at"/>
+        <result property="updateAt"      column="update_at"/>
+        <result property="version"       column="version"/>
+    </resultMap>
+
+    <!--
+      取消:RESERVED → CANCELLED。
+      ⚠️ 刻意不带 version(01 §3.2 / 04 §五):窗口期取消时 DB 里还没有这行,
+         读不到 version,带 version 的写法在那条路径根本无法构造。
+         status=0 已是充分守卫(状态机只有 0 有出边)。
+      ⚠️ valid_until >= #{now} 防"场次已结束还能取消"。
+    -->
+    <update id="cancelByNo">
+        UPDATE `reservation`
+        SET `status`    = 2,
+            `version`   = `version` + 1,
+            `update_at` = #{now}
+        WHERE `reservation_no` = #{reservationNo}
+          AND `status`         = 0
+          AND `valid_until`   &gt;= #{now}
+    </update>
+
+    <!--
+      核销:RESERVED → VERIFIED。**唯一带 version 的 CAS**。
+      STAFF 是先看到详情页(已读到 version)再点核销,带上它能挡"页面数据已过期"的误操作。
+      这个不对称是刻意的,不是漏写。
+    -->
+    <update id="verifyByNo">
+        UPDATE `reservation`
+        SET `status`      = 1,
+            `verified_at` = #{verifiedAt},
+            `version`     = `version` + 1,
+            `update_at`   = #{verifiedAt}
+        WHERE `reservation_no` = #{reservationNo}
+          AND `status`         = 0
+          AND `version`        = #{version}
+    </update>
+
+    <!--
+      批量过期:RESERVED → EXPIRED。定时任务调用,多行更新故无法逐行带 version。
+      ⚠️ now 由应用层按 reservex.zone 传入,不用 SQL NOW() ——
+         MySQL 容器时区漏配成 UTC 时 NOW() 早 8h,会把当天还有效的预约全刷成 EXPIRED。
+    -->
+    <update id="expireBySlot">
+        UPDATE `reservation`
+        SET `status`    = 3,
+            `version`   = `version` + 1,
+            `update_at` = #{now}
+        WHERE `slot_id`     = #{slotId}
+          AND `status`      = 0
+          AND `valid_until` &lt; #{now}
+    </update>
+
+</mapper>

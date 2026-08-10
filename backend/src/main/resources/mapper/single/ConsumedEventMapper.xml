@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.ConsumedEventMapper">
+
+    <!-- 复合主键 (consumer_group, event_id):无 <id>,不能用 selectById -->
+    <resultMap id="BaseResultMap" type="com.reservex.entity.ConsumedEvent">
+        <result property="consumerGroup" column="consumer_group"/>
+        <result property="eventId"       column="event_id"/>
+        <result property="consumedAt"    column="consumed_at"/>
+    </resultMap>
+
+    <!--
+      幂等表。主键含 consumer_group ——
+      同一条消息被五个消费组各消费一次是**正常**的;只用 event_id 做主键,
+      第二个消费组会误判"已处理过"而整体跳过(提醒邮件永远发不出去)。
+
+      ⚠️ markConsumed 与 tryMarkBefore **SQL 完全相同**,拆成两个方法是刻意的:
+         调用点的方法名要声明自己用的是哪种写入时机(06 §4.1 判据)——
+           · 有唯一键/CAS 兜底(落库、核销)→ markConsumed,**成功后写**
+           · 无兜底的界外调用(发邮件)   → tryMarkBefore,**动作前写**
+         用错的后果不对称:前者用"动作前写"会在失败重试时被自己挡住(消息永远消费不掉);
+         后者用"成功后写"会在发信成功但写库失败时重复发信。
+         同名调用看不出区别,而这恰恰是最容易用错的地方。
+
+      ⚠️ 一律 INSERT IGNORE 并**以返回行数为准**:
+         并发重投下两个线程同时到这里,靠主键让其中一个拿到 0 行后退出。
+         写成"先查再插"两个线程会双双通过检查 —— 幂等形同虚设。
+    -->
+    <insert id="markConsumed">
+        INSERT IGNORE INTO `consumed_event` (`consumer_group`, `event_id`, `consumed_at`)
+        VALUES (#{consumerGroup}, #{eventId}, #{consumedAt})
+    </insert>
+
+    <insert id="tryMarkBefore">
+        INSERT IGNORE INTO `consumed_event` (`consumer_group`, `event_id`, `consumed_at`)
+        VALUES (#{consumerGroup}, #{eventId}, #{consumedAt})
+    </insert>
+
+    <!-- 仅供排查用。**业务路径不要调它做判断**,理由见上 -->
+    <select id="existsBy" resultType="int">
+        SELECT COUNT(1)
+        FROM `consumed_event`
+        WHERE `consumer_group` = #{consumerGroup}
+          AND `event_id`       = #{eventId}
+    </select>
+
+</mapper>

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.VerificationLogMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.VerificationLog">
+        <id     property="verifyId"      column="verify_id"/>
+        <result property="reservationNo" column="reservation_no"/>
+        <result property="staffId"       column="staff_id"/>
+        <result property="method"        column="method"/>
+        <result property="qrNonce"       column="qr_nonce"/>
+        <result property="attemptNonce"  column="attempt_nonce"/>
+        <result property="result"        column="result"/>
+        <result property="verifyTime"    column="verify_time"/>
+    </resultMap>
+
+    <sql id="Cols">
+        `verify_id`, `reservation_no`, `staff_id`, `method`,
+        `qr_nonce`, `attempt_nonce`, `result`, `verify_time`
+    </sql>
+
+    <!--
+      成功核销:填 qr_nonce,由 uk_qr_nonce 承担唯一性(第二道防重复,第一道是 CAS)。
+      ⚠️ 撞 uk_qr_nonce 说明该 nonce 已被用过(重放)。调用方**必须捕获**并转成
+         result=1 的失败记录(走 insertAttempt),不能让异常直接冒到用户 ——
+         那会返 500,而这其实是一个有明确业务含义的拒绝。
+    -->
+    <insert id="insertSuccess">
+        INSERT INTO `verification_log` (<include refid="Cols"/>)
+        VALUES (#{verifyId}, #{reservationNo}, #{staffId}, #{method},
+                #{qrNonce}, #{attemptNonce}, #{result}, #{verifyTime})
+    </insert>
+
+    <!--
+      失败/重放:真实 nonce 记 attempt_nonce(**非唯一**),qr_nonce 留 NULL。
+      这是本项目最反直觉的一处(03 §七 / README 纪律 #4):
+      若把真实 nonce 写进带唯一键的 qr_nonce,重放的第二次会撞 uk 插不进去 ——
+      **攻击行为反而因为防重放机制而没留下任何痕迹**。
+      MySQL 唯一索引允许多个 NULL,所以成功记录的唯一性仍然成立。
+      ⚠️ 调用方必须把 qrNonce 传 null,不能图省事传同一个值。
+    -->
+    <insert id="insertAttempt">
+        INSERT INTO `verification_log` (<include refid="Cols"/>)
+        VALUES (#{verifyId}, #{reservationNo}, #{staffId}, #{method},
+                NULL, #{attemptNonce}, #{result}, #{verifyTime})
+    </insert>
+
+    <!-- 核销台按预约查历史:游客说"扫不了"时,这是唯一的证据来源。
+         result 区分四种失败(1 重复 / 2 已取消 / 3 已过期 / 4 无效码),
+         现场要能立刻分清是他自己取消过、还是超时了、还是码被人抢先用了 -->
+    <select id="selectByReservation" resultMap="BaseResultMap">
+        SELECT <include refid="Cols"/>
+        FROM `verification_log`
+        WHERE `reservation_no` = #{reservationNo}
+        ORDER BY `verify_time` DESC
+    </select>
+
+</mapper>

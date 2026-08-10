@@ -1,0 +1,285 @@
+# ============================================================================
+# ReserveX 主配置(08 §七)
+#
+# ⚠️ 每一项都必须在代码里有读取点 —— 只写 yml 不读 = 配了不生效的静默错误(M7 就是这么暴露的)。
+# ⚠️ 主机名用 ${VAR:默认值}:默认值面向本机开发(mvn spring-boot:run),
+#    容器里由 application-prod.yml 覆盖成服务名。密钥类**刻意不给默认值** ——
+#    缺环境变量时 Spring 解析占位符失败即启动中断,这正是想要的 fail-fast。
+# ============================================================================
+spring:
+  application:
+    name: reservex
+  main:
+    banner-mode: off
+  # §7.4:优雅停机。D6 五阶段消费者跨库,SIGTERM 落在阶段1↔阶段2 之间没有事务保护
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: 6379
+      password: ${REDIS_PASSWORD}     # requirepass 后必须带,否则所有命令返 NOAUTH
+      database: 0                     # §4.6:全部 key 同库。分 db 不改变 maxmemory-policy
+                                      #   (实例级),只会把 D4-A 的 2 round-trip 变 3
+      timeout: 2000ms
+      # 抢号路径 2 round-trip(限流 + Lua),池太小会把 Redis 排队伪装成"Lua 慢"
+      lettuce:
+        pool: { max-active: 64, max-idle: 32, min-idle: 8, max-wait: 2000ms }
+
+  jackson:
+    date-format: "yyyy-MM-dd HH:mm:ss"
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+    # Snowflake ID 一律序列化成字符串(越过 JS 2^53 精度悬崖)统一在 common/JacksonConfig
+    # 配一次,不逐 DTO 标注 —— 漏一个就是一条静默错路径(07 §3·补·4)
+
+  mail:
+    host: ${SMTP_HOST:smtp.qq.com}
+    port: 465
+    username: ${SMTP_USERNAME:reservex@qq.com}
+    password: ${QQ_SMTP_PASSWORD}
+    properties:
+      mail.smtp.ssl.enable: true
+      mail.smtp.timeout: 5000
+      mail.smtp.connectiontimeout: 3000
+      mail.smtp.writetimeout: 5000
+
+server:
+  port: 8080
+  shutdown: graceful          # 默认 immediate,在途 HTTP 请求会被直接切断
+  tomcat:
+    threads: { max: 200, min-spare: 20 }
+    accept-count: 200         # 队列满即拒,比无限排队更符合"快速失败"(05 §三·补)
+
+mybatis-plus:
+  # 分库 mapper 与单库 mapper **物理分包**(03 §1.1),防误挂默认数据源
+  mapper-locations: classpath*:/mapper/sharding/*.xml,classpath*:/mapper/single/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+    db-config:
+      id-type: input          # 主键一律业务侧 Snowflake 生成,禁用自增/雪花插件
+      logic-delete-field: ""  # 本项目不用逻辑删除:状态机已有 CANCELLED/EXPIRED 终态
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics,env
+  endpoint:
+    health:
+      show-details: when-authorized
+  health:
+    mail:
+      enabled: false          # SMTP 巡检会真连邮箱登录;演示授权码非真实凭据 → 必 535 把 health 拽成 DOWN。邮件是界外旁路调用,不参与核心库存链路,其可用性靠 D2/D3 消息重试与告警盯,不该拖垮健康总览(08 §6.0)
+  metrics:
+    tags:
+      application: reservex
+
+# ============================================================================
+# Sa-Token:access 无状态 + refresh 有状态(08 §4.6)
+#   access 每请求都要鉴权,若查 Redis 则抢号多一个 round-trip → 与 D4-A 冲突。
+#   无状态是硬约束,不是偏好。代价已认下:注销后 access 最长 30min 仍有效。
+# ============================================================================
+sa-token:
+  token-name: Authorization
+  token-style: uuid
+  is-concurrent: true              # 允许同账号多端
+  is-share: false                  # 每次登录新 token(共享 token 下无法按端注销)
+  jwt-secret-key: ${JWT_SECRET}    # 第四把独立密钥,不复用 QR_HMAC_KEY / AES_KEY
+  timeout: 1800                    # access 30min
+  active-timeout: -1               # 旧名 activity-timeout 在 1.39 已改名 active-timeout
+  is-log: false
+  is-print: false
+
+rocketmq:
+  name-server: ${ROCKETMQ_NAMESRV:localhost:9876}
+  producer:
+    group: pg-reservex
+    send-message-timeout: 3000        # 抢号线程同步发消息,超时必须短于前端等待
+    retry-times-when-send-failed: 2   # 失败也有 pending-scanner 补投(D2),不多试
+
+logging:
+  level:
+    root: INFO
+    com.reservex: INFO
+    org.apache.shardingsphere: WARN
+  pattern:
+    # requestId 由 common/RequestIdFilter 放进 MDC,贯穿 HTTP 与消息(08 §6.0 Tracing)
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId:-}] %logger{36} - %msg%n"
+
+# ============================================================================
+# 业务配置(reservex.*)—— 单一真理源
+# ============================================================================
+reservex:
+  # §7.2:业务时区单一真理源。所有"当日结束/次日零点/valid_until/dup_ttl/QR exp"的计算
+  #   都从这里取 ZoneId,**禁止代码里散落 ZoneId.systemDefault()** ——
+  #   它读的是容器 TZ,漏配就静默偏 8h 且无任何报错
+  zone: Asia/Shanghai
+
+  # ---- 三数据源(03 §1.1)-------------------------------------------------
+  #   ds0/ds1 由 ShardingSphere 托管,分片规则只覆盖 user / reservation 两张绑定表
+  #   single 是**独立 DataSource**,不纳入分片规则,配独立 singleTxManager
+  #   ⚠️ URL 必带 serverTimezone=Asia/Shanghai;缺了 JDBC 按服务器时区推断,DATETIME 偏 8h
+  #   ⚠️ 三池之和(20+20+30=70)必须 < MySQL max_connections(默认 151),留余量给 CLI/对账。
+  #      §6.4 的告警「DB 连接池占用率 > 80%」必须有这个分母才算得出来
+  datasource:
+    ds0:
+      url: "jdbc:mysql://${MYSQL_HOST:localhost}:3306/reservex_ds0?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
+      username: root
+      password: ${MYSQL_ROOT_PASSWORD}
+      pool: { maximum-pool-size: 20, minimum-idle: 5, connection-timeout: 3000, max-lifetime: 1500000 }
+    ds1:
+      url: "jdbc:mysql://${MYSQL_HOST:localhost}:3306/reservex_ds1?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
+      username: root
+      password: ${MYSQL_ROOT_PASSWORD}
+      pool: { maximum-pool-size: 20, minimum-idle: 5, connection-timeout: 3000, max-lifetime: 1500000 }
+    single:
+      url: "jdbc:mysql://${MYSQL_HOST:localhost}:3306/reservex_single?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
+      username: root
+      password: ${MYSQL_ROOT_PASSWORD}
+      pool: { maximum-pool-size: 30, minimum-idle: 10, connection-timeout: 3000, max-lifetime: 1500000 }
+
+  quota:
+    # M7 裁定:v1 **固定 1,不可配**。启动时断言 != 1 直接 fail-fast(bootstrap/QuotaGuard)
+    #   (03 §3.1:route PK 与 Lua SET NX 都只能表达"一天一条",配 >1 时两道防线同时失效)
+    daily-per-idcard: 1
+    fail-fast-on-invalid: true
+
+  slot:
+    gen-cron: "0 30 2 * * ?"        # 每日 02:30 生成次日 slot(06 §4.0/§4.3 核心级任务)
+    gen-days-ahead: 1
+    # ⚠️ 以下五项**只用于灌 02-seed.sql 的 slot_template 种子**,运行期一律读表不读这里。
+    #    代码里凡是在业务路径读 seed.* 的都是错的(03 §4.0 / §7.1 红线)
+    seed:
+      template-hours: [9, 11, 14, 16]
+      default-duration-min: 120     # valid_until = slot_date + slot_hour:00 + duration_min
+      default-capacity: 50
+      default-bucket-count: 10      # 已放号禁改(改则 hash 路由错位)
+      default-release-offset-min: -840   # 前一日 10:00 放号
+
+  redis-key:
+    # TTL 全部**派生**不硬编,避免"跨天场次的 key 提前消失"(04 §1.1 dup TTL bug 根因)
+    dup-ttl-mode: until-slot-date-end   # dup:{slot_date}:{hash} 活到 slot_date 23:59:59
+    dup-ttl-cap-days: 7                 # 上限兜底,防远期 slot 把 key 压太久
+    slot-full-ttl-mode: until-slot-date-end
+    bucket-ttl-mode: until-slot-date-end
+    meta-ttl-base-sec: 86400
+    meta-ttl-jitter-sec: 300            # 05 §三 TTL 抖动
+
+  pending:
+    persist-timeout-sec: 30      # D2 scanner 捞取阈值
+    scan-cron: "*/10 * * * * ?"
+    scan-page-size: 500
+    reinject-max: 5              # 同一 rno 补投上限;耗尽转 stuck,**不自主 10.2a**
+    occupy-ttl-sec: 1800         # occupy TTL 30min;scanner 每轮续期
+    stuck-keep-renewing-occupy: true    # 卡单后仍续期,否则人工连"该回滚什么"都查不到
+    stuck-inspect-cron: "0 */10 * * * ?"
+    stuck-alert-after-min: 60
+
+  reminder:
+    ahead-min: 30                # ReminderTrigger 延时到 valid_until - 30min
+
+  reconcile:
+    enabled: true
+    done-marker-ttl-sec: 300     # done:{task}:{period} 短 TTL,只挡当批内重踢
+    page-size: 500
+    rate-limit-per-sec: 200
+    stock-auto-fix: false        # 库存对账默认**只告警不自动改**;开启必带 reconcile:fixing:* 守卫
+    crons:
+      slot-gen: "0 30 2 * * ?"
+      release: "0 * * * * ?"          # 场次发布对账 1min
+      reconcile-a: "0 * * * * ?"      # Redis→DB 1min
+      reconcile-b: "0 */5 * * * ?"    # DB→Redis 5min
+      stock: "0 */5 * * * ?"
+      route: "0 */10 * * * ?"
+      expire: "0 * * * * ?"
+      reminder: "0 */5 * * * ?"
+      pending-idx: "0 */5 * * * ?"
+      orphan-route: "0 7 * * * ?"     # 孤儿 route 清理 1h
+    orphan-route-min-age-min: 10      # 守卫:不删在途注册的 route(03 §八·补)
+
+  # ---- 四把密钥(两两不等,bootstrap/SecretGuard 启动断言)-------------------
+  aes:
+    # 密钥**集**而非单 key:解密时按 user.id_card_key_id 取对应 key(03 §2.1)。
+    # 无此结构则"支持轮换"是空承诺:换 key 后存量密文永久解不开(AEADBadTagException)
+    key-id: aes-v1               # 当前用于**加密**的版本(写入 user.id_card_key_id)
+    keys:
+      aes-v1: ${AES_KEY}
+      # aes-v2: ${AES_KEY_V2}    # 轮换:加这一行 + 把 key-id 改成 aes-v2,旧行仍可解
+  id-hash:
+    # id_card_hash 的 pepper:**全局固定、非 per-row 盐、不可轮换**(进了 id_card_route PK)。
+    # 用 per-row 盐会让同一身份证在两个用户下得到不同 hash → M6 全局唯一直接失效。
+    # 这是本项目唯一"照书做反而错"的地方。
+    pepper: ${ID_HASH_PEPPER}
+  qr:
+    hmac-key: ${QR_HMAC_KEY}     # 与 AES 数据密钥分离:同一 key 既加密身份证又签 QR,一处泄露两处失守
+    key-id: qr-v1                # 载荷 kid 段
+    accepted-key-ids: [qr-v1]    # 轮换时旧 kid 保留在此直至窗口过
+    ttl-sec: 60                  # 载荷 exp = now + 60;服务端验签窗口(不预存 nonce)
+
+  # ---- 超管引导(08 §4.1)-------------------------------------------------
+  admin-bootstrap:
+    enabled: true
+    user-id: 1                   # 固定 1 → 1 mod 2 = 1 → 落 reservex_ds1(插错库=超管登不上)
+    email: admin@reservex.local
+    init-password: ${ADMIN_INIT_PASSWORD}
+    force-change-on-first-login: true
+
+  ratelimit:
+    api-local-rps: 2000          # 本地 Guava 接口级
+    user-redis-rps: 5            # Redis 用户级
+    slot-redis-rps: 100          # Redis 场次级
+
+  redis:
+    degrade:                     # D7 Redis 故障时各链路的行为(05 §五)
+      grab: reject               # 抢号拒绝 —— 库存真理源不可用时不能放行
+      query: passthrough
+      verify: local-only
+
+  # ---- 舱壁线程池(§7.4)-------------------------------------------------
+  # ⚠️ 抢号/核销**不放异步池**:它们是同步返回的请求线程(Tomcat),舱壁体现在
+  #    Tomcat 线程 + 各自的限流维度 + 各自的 Redis key 命名空间。
+  #    这里定义的是**会抢线程的旁路任务**,防它们把 Tomcat/公共池吃干。
+  executor:
+    mail:                        # 界外调用(SMTP),超时高 → 必须独立且有界
+      core: 2
+      max: 4
+      queue: 200
+      keep-alive-sec: 60
+      rejected: caller-runs      # 队列满即由调用线程执行(自然反压),不丢
+    reconcile:                   # 11 类对账,分页 + 限速,慢但不紧急
+      core: 2
+      max: 2
+      queue: 500
+      keep-alive-sec: 60
+      rejected: abort            # 拒了下个周期还会跑(任务本身幂等);caller-runs 会卡住调度线程
+    scheduler:
+      pool-size: 8               # @Scheduled 默认只有 1 根线程 → 一个任务卡死全部任务停摆
+
+  # ---- 消费者(06 §一)---------------------------------------------------
+  consumer:
+    # ⚠️ 组名是 consumed_event 的主键前缀:改组名 = 幂等历史全失效,存量消息会被重复消费。
+    #    视为**不可变常量**(§7.1 红线)
+    groups:
+      persistence: cg-persistence
+      rollback: cg-rollback
+      reminder: cg-reminder
+      timeout: cg-timeout
+      release: cg-release
+      dlq: dlq-monitor
+    max-reconsume-times: 16
+    # persistence 是唯一的写库消费者 → 它的线程数就是 DB 写并发的上界,
+    # 必须 ≤ single 池(30)且留出 route/event/occupied 的连接;20 是留余量后的值
+    thread:
+      persistence: { min: 20, max: 20 }
+      rollback: { min: 2, max: 4 }
+      timeout: { min: 4, max: 8 }
+      release: { min: 1, max: 2 }      # 放号靠选主,并发无意义
+      reminder: { min: 2, max: 4 }     # 与 executor.mail 同量级,别让邮件把池占满
+    # ⚠️ 必须 1:D6 五阶段是**单条**语义,批量消费下一条失败会把整批重投 → 已成功的被重复执行
+    consume-message-batch-max-size: 1
+
+

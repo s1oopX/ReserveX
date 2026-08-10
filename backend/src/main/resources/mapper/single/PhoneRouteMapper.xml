@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.PhoneRouteMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.PhoneRoute">
+        <id     property="phone"    column="phone"/>
+        <result property="userId"   column="user_id"/>
+        <result property="createAt" column="create_at"/>
+    </resultMap>
+
+    <insert id="insertIgnore">
+        INSERT IGNORE INTO `phone_route` (`phone`, `user_id`, `create_at`)
+        VALUES (#{phone}, #{userId}, #{createAt})
+    </insert>
+
+    <!-- 补偿删除,条件带 user_id(同 EmailRouteMapper 的理由) -->
+    <delete id="deleteByPhoneAndUser">
+        DELETE FROM `phone_route`
+        WHERE `phone`   = #{phone}
+          AND `user_id` = #{userId}
+    </delete>
+
+</mapper>

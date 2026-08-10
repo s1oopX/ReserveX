@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.StuckReservationMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.StuckReservation">
+        <id     property="reservationNo" column="reservation_no"/>
+        <result property="slotId"        column="slot_id"/>
+        <result property="bucketKey"     column="bucket_key"/>
+        <result property="dupKey"        column="dup_key"/>
+        <result property="userId"        column="user_id"/>
+        <result property="idCardHash"    column="id_card_hash"/>
+        <result property="slotDate"      column="slot_date"/>
+        <result property="reinjectCount" column="reinject_count"/>
+        <result property="lastError"     column="last_error"/>
+        <result property="status"        column="status"/>
+        <result property="createAt"      column="create_at"/>
+        <result property="resolveAt"     column="resolve_at"/>
+        <result property="resolverId"    column="resolver_id"/>
+    </resultMap>
+
+    <!--
+      卡单落库(死信兜底)。消息进死信队列后,人工介入前先把**回滚所需的全部信息**存下来。
+      ⚠️ bucket_key 与 dup_key 必须落库:死信消息体可能已不可读(反序列化失败正是它进死信的原因),
+         而回滚 Redis 必须拿到这两个 key 的**原文**。事后靠 slotId 重新拼 key 是不行的 ——
+         借桶产生的预约,主桶不等于实际命中的桶,拼出来的 key 会回滚错桶的余量。
+      ⚠️ IGNORE:同一条消息重复进死信监控时不该报错。
+    -->
+    <insert id="insertIgnore">
+        INSERT IGNORE INTO `stuck_reservation`
+            (`reservation_no`, `slot_id`, `bucket_key`, `dup_key`, `user_id`,
+             `id_card_hash`, `slot_date`, `reinject_count`, `last_error`,
+             `status`, `create_at`, `resolve_at`, `resolver_id`)
+        VALUES (#{reservationNo}, #{slotId}, #{bucketKey}, #{dupKey}, #{userId},
+                #{idCardHash}, #{slotDate}, #{reinjectCount}, #{lastError},
+                #{status}, #{createAt}, #{resolveAt}, #{resolverId})
+    </insert>
+
+    <!-- 对账中心第三个 Tab:待研判列表。走 idx_status(status, create_at),
+         先进先出 —— 卡得越久的越该先看 -->
+    <select id="selectPending" resultMap="BaseResultMap">
+        SELECT `reservation_no`, `slot_id`, `bucket_key`, `dup_key`, `user_id`,
+               `id_card_hash`, `slot_date`, `reinject_count`, `last_error`,
+               `status`, `create_at`, `resolve_at`, `resolver_id`
+        FROM `stuck_reservation`
+        WHERE `status` = 0
+        ORDER BY `create_at`
+        LIMIT #{limit}
+    </select>
+
+    <!--
+      人工处置:status 0(待研判)→ 1 已重投成功 / 2 已回滚 / 3 已忽略。
+      ⚠️ 带 status=0 守卫,两个运维同时处置只有一个成功 ——
+         另一个拿到 0 行,前端应提示"已被他人处理",而不是双双显示成功
+         (那会让两人都以为自己回滚过 Redis,实际可能回滚了两次 = 凭空造库存)。
+      ⚠️ resolver_id 必填:人工动作必须有责任归属。
+    -->
+    <update id="resolve">
+        UPDATE `stuck_reservation`
+        SET `status`      = #{status},
+            `resolve_at`  = #{resolveAt},
+            `resolver_id` = #{resolverId}
+        WHERE `reservation_no` = #{reservationNo}
+          AND `status`         = 0
+    </update>
+
+</mapper>
