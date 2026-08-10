@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.ReconcileLog;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
@@ -10,7 +9,6 @@ import java.util.List;
 /**
  * 对账流水 Mapper(**单库**)。
  */
-@Mapper
 public interface ReconcileLogMapper extends BaseMapper<ReconcileLog> {
 
     /**

@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.IdCardRoute;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDate;
@@ -15,7 +14,6 @@ import java.time.LocalDateTime;
  * {@code selectById} / {@code updateById} / {@code deleteById}</b>,
  * 按主键的操作一律走本接口的自定义方法(见 {@link IdCardRoute} 类注释)。
  */
-@Mapper
 public interface IdCardRouteMapper extends BaseMapper<IdCardRoute> {
 
     /**

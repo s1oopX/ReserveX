@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.ConsumedEvent;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDateTime;
@@ -23,7 +22,6 @@ import java.time.LocalDateTime;
  * 用错时机的后果不对称:前者用"动作前写"会在失败重试时被自己挡住(消息永远消费不掉);
  * 后者用"成功后写"会在发信成功但写库失败时重复发信。
  */
-@Mapper
 public interface ConsumedEventMapper extends BaseMapper<ConsumedEvent> {
 
     /**

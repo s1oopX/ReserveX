@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.ReservationEvent;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
@@ -17,7 +16,6 @@ import java.util.List;
  * <p>⚠️ <b>与预约落库同一个事务</b>(都在 single 库,都用 singleTxManager)。
  * 分开提交会出现"有预约无事件"的空档,排查时看不到 CREATED 事件。
  */
-@Mapper
 public interface ReservationEventMapper extends BaseMapper<ReservationEvent> {
 
     /**

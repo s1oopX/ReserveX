@@ -1,14 +1,14 @@
 package com.reservex.common;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Data;
 import org.slf4j.MDC;
 
 /**
  * 统一响应包(07 §3·补)。
  *
- * <p>约定:**HTTP 状态码恒为 200,业务结果看 {@code code}**(鉴权 401/403 除外)。
- * 理由:前端只需一处解包逻辑;若业务失败用 4xx/5xx,浏览器控制台会满屏红,
- * 而"库存不足"并不是错误。
+ * <p>业务失败返回 200 + {@code code};协议/鉴权/限流/系统异常分别使用
+ * 4xx/5xx,但响应体始终保持同一结构。
  *
  * <p>{@code requestId} 从 MDC 取,与日志里的 {@code %X{requestId}} 是同一个值 ——
  * 用户截图报错时,这一个串就能把整条链路的日志捞出来(08 §6.0)。
@@ -19,14 +19,15 @@ import org.slf4j.MDC;
 @Data
 public class Result<T> {
 
-    private int code;
-    private String message;
+    private String code;
+    private String msg;
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     private T data;
     private String requestId;
 
-    private Result(int code, String message, T data) {
+    private Result(String code, String msg, T data) {
         this.code = code;
-        this.message = message;
+        this.msg = msg;
         this.data = data;
         this.requestId = MDC.get(RequestIdFilter.MDC_KEY);
     }
@@ -43,11 +44,7 @@ public class Result<T> {
         return new Result<>(errorCode.getCode(), errorCode.getMessage(), null);
     }
 
-    public static <T> Result<T> fail(ErrorCode errorCode, String message) {
-        return new Result<>(errorCode.getCode(), message, null);
-    }
-
-    public boolean isOk() {
-        return code == ErrorCode.OK.getCode();
+    public static <T> Result<T> fail(ErrorCode errorCode, String msg) {
+        return new Result<>(errorCode.getCode(), msg, null);
     }
 }

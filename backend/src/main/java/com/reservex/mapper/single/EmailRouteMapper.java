@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.EmailRoute;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDateTime;
@@ -13,7 +12,6 @@ import java.time.LocalDateTime;
  * <p><b>登录第一跳走这里</b>:{@code email → user_id},再拿 user_id 按分片键查
  * {@code user}(03 §2.2)。绝不在分库表上按 email 查(见 {@code sharding.UserMapper} 注释)。
  */
-@Mapper
 public interface EmailRouteMapper extends BaseMapper<EmailRoute> {
 
     /**

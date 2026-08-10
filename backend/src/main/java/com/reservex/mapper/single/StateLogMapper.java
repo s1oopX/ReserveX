@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.StateLog;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 /**
@@ -12,7 +11,6 @@ import org.apache.ibatis.annotations.Param;
  * 正因如此窗口期取消先到时 DB 里没有这行 → 必须用下面的 {@link #insertOrCancel}
  * 写空回滚占位,不能简单 INSERT。
  */
-@Mapper
 public interface StateLogMapper extends BaseMapper<StateLog> {
 
     /**

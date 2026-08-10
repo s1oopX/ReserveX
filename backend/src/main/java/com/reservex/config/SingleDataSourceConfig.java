@@ -6,6 +6,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
@@ -35,6 +36,10 @@ import javax.sql.DataSource;
  * <p>⚠️ 跨这两个数据源的操作(注册的"单库写 route + 分库写 user")<b>没有分布式事务</b>,
  * 靠 03 §八·补 的两写顺序 + 孤儿 route 清理任务收敛。不要试图用 {@code @Transactional}
  * 包住两者 —— 那只会让人误以为有原子性。
+ *
+ * <p>⚠️ 所有 {@code DataSource}/{@code SqlSessionFactory} 参数必须带 {@link Qualifier}。
+ * Spring 会优先选择分片侧的 {@code @Primary},参数名叫 {@code singleDataSource}
+ * 也不会覆盖该规则;漏掉 qualifier 会让单库 SQL 静默走进 ShardingSphere。
  */
 @Configuration
 @MapperScan(basePackages = "com.reservex.mapper.single",
@@ -62,7 +67,8 @@ public class SingleDataSourceConfig {
     }
 
     @Bean
-    public SqlSessionFactory singleSqlSessionFactory(DataSource singleDataSource) throws Exception {
+    public SqlSessionFactory singleSqlSessionFactory(
+            @Qualifier("singleDataSource") DataSource singleDataSource) throws Exception {
         MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
         factory.setDataSource(singleDataSource);
         factory.setMapperLocations(new PathMatchingResourcePatternResolver()
@@ -71,12 +77,11 @@ public class SingleDataSourceConfig {
     }
 
     /**
-     * 单库 SqlSessionTemplate。⚠️ Mapper 绑定用 template 而非 factory —— 理由见
-     * {@link com.reservex.config.ShardingDataSourceConfig#shardingSqlSessionTemplate} 的注释:
-     * 直接绑 factory 会绕过 MyBatis-Plus 的统一 template 路径,丢失执行级元数据。
+     * 单库 SqlSessionTemplate。MapperScan 显式引用它,避免多工厂环境下回退到 primary。
      */
     @Bean
-    public SqlSessionTemplate singleSqlSessionTemplate(SqlSessionFactory singleSqlSessionFactory) {
+    public SqlSessionTemplate singleSqlSessionTemplate(
+            @Qualifier("singleSqlSessionFactory") SqlSessionFactory singleSqlSessionFactory) {
         return new SqlSessionTemplate(singleSqlSessionFactory);
     }
 
@@ -86,7 +91,8 @@ public class SingleDataSourceConfig {
      * 显式声明失效(且失效方式是静默挂回 primary)。
      */
     @Bean(name = "singleTxManager")
-    public PlatformTransactionManager singleTxManager(DataSource singleDataSource) {
+    public PlatformTransactionManager singleTxManager(
+            @Qualifier("singleDataSource") DataSource singleDataSource) {
         return new DataSourceTransactionManager(singleDataSource);
     }
 }

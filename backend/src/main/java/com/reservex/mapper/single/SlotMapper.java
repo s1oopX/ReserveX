@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.Slot;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDate;
@@ -12,7 +11,6 @@ import java.util.List;
 /**
  * 场次 Mapper(**单库**)。
  */
-@Mapper
 public interface SlotMapper extends BaseMapper<Slot> {
 
     /**

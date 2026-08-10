@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.VerificationLog;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
@@ -15,7 +14,6 @@ import java.util.List;
  * 撞 {@code uk_qr_nonce} 插不进去,**攻击行为反而没留下痕迹**
  * (见 {@link VerificationLog} 类注释)。
  */
-@Mapper
 public interface VerificationLogMapper extends BaseMapper<VerificationLog> {
 
     /**

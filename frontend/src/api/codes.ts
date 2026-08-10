@@ -41,6 +41,8 @@ export const Code = {
   PASSWORD_CHANGE_REQUIRED: 'PASSWORD_CHANGE_REQUIRED',
 
   // 协议层
+  BAD_REQUEST: 'BAD_REQUEST',
+  NOT_FOUND: 'NOT_FOUND',
   FORBIDDEN: 'FORBIDDEN',
   UNAUTHORIZED: 'UNAUTHORIZED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
@@ -85,6 +87,8 @@ export const CodeText: Record<string, string> = {
   [Code.LOGIN_FAILED]: '邮箱或密码错误',
   [Code.ACCOUNT_BANNED]: '账号已封禁,请联系管理员',
 
+  [Code.BAD_REQUEST]: '请求参数不合法',
+  [Code.NOT_FOUND]: '资源不存在',
   [Code.FORBIDDEN]: '无权操作',
   [Code.UNAUTHORIZED]: '请先登录',
   [Code.INTERNAL_ERROR]: '系统异常,请稍后重试',

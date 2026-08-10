@@ -130,9 +130,8 @@ public class ShardingDataSourceConfig {
      * 本项目有两个工厂(sharding + single),不标 primary 它就分不清用哪个 → 启动直接炸
      * "expected single matching bean but found 2"。
      *
-     * <p>标 primary 后,自动建的 template 指向分库工厂;但各 Mapper 由
-     * {@code @MapperScan} **显式**绑定到各自 template,primary 只影响"没显式指定的默认选择",
-     * 不破坏显式绑定。
+     * <p>标 primary 后,未显式限定的数据访问组件默认走分库工厂;两类 Mapper 仍由
+     * 各自的 {@code @MapperScan} 绑定到对应 template。
      */
     @Bean
     @Primary
@@ -145,15 +144,7 @@ public class ShardingDataSourceConfig {
     }
 
     /**
-     * 分库 SqlSessionTemplate(从工厂派生)。
-     *
-     * <p>⚠️ 用 {@code sqlSessionTemplateRef} 而不是 {@code sqlSessionFactoryRef} 绑定 Mapper:
-     * 后者直接把 Mapper 与 {@code SqlSessionFactory} 配成对,**绕过了 MyBatis-Plus 自动建的
-     * {@code SqlSessionTemplate}**。后果是跨调用持有的执行级状态(MappedStatement 元数据、
-     * 分片路由的 Statement 上下文)走的是裸 {@code SqlSessionFactory} 路径,
-     * ShardingSphere 在 {@code MybatisConnection} 层拿不到正确的逻辑表元数据 → 抛
-     * {@code TableNotFoundException: audit_log does not exist}(audit_log 是单库表,分片库根本不认识)。
-     * 切到 template 即让 Mapper 经由自动配置的统一 template 执行,元数据链路完整。
+     * 分库 SqlSessionTemplate(从工厂派生),供 MapperScan 显式绑定。
      */
     @Bean
     @Primary

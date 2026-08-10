@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.SlotTemplate;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
@@ -13,7 +12,6 @@ import java.util.List;
  * <p>⚠️ 运行期一律读本表,**不读 {@code reservex.slot.seed.*}** ——
  * 那组 yml 只在 {@code 02-seed.sql} 灌种子时用一次(03 §4.0 / 08 §7.1 红线)。
  */
-@Mapper
 public interface SlotTemplateMapper extends BaseMapper<SlotTemplate> {
 
     /**

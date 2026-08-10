@@ -2,7 +2,6 @@ package com.reservex.mapper.sharding;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.User;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 /**
@@ -23,7 +22,6 @@ import org.apache.ibatis.annotations.Param;
  * <p>⚠️ {@code user} 表上的 {@code idx_email} 只留给运维排查(在单个 schema 内直查),
  * 不是给本 Mapper 用的。
  */
-@Mapper
 public interface UserMapper extends BaseMapper<User> {
 
     /**

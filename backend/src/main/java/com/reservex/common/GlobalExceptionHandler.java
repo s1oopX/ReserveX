@@ -6,11 +6,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.RedisSystemException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * 全局异常 → 响应包(07 §3·补)。
@@ -29,10 +32,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(BizException.class)
-    public Result<Void> onBiz(BizException e) {
+    public ResponseEntity<Result<Void>> onBiz(BizException e) {
         // 预期内失败,不打栈:它们量大(库存不足/限流)且无诊断价值
         log.debug("业务异常 code={} msg={}", e.getErrorCode().getCode(), e.getMessage());
-        return Result.fail(e.getErrorCode(), e.getMessage());
+        HttpStatus status = e.getErrorCode() == ErrorCode.RATE_LIMITED
+                ? HttpStatus.TOO_MANY_REQUESTS : HttpStatus.OK;
+        return ResponseEntity.status(status).body(Result.fail(e.getErrorCode(), e.getMessage()));
     }
 
     @ExceptionHandler({MethodArgumentNotValidException.class, BindException.class,
@@ -43,14 +48,16 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(NotLoginException.class)
-    public Result<Void> onNotLogin(NotLoginException e) {
-        return Result.fail(ErrorCode.UNAUTHORIZED);
+    public ResponseEntity<Result<Void>> onNotLogin(NotLoginException e) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(Result.fail(ErrorCode.UNAUTHORIZED));
     }
 
     @ExceptionHandler(NotRoleException.class)
-    public Result<Void> onNotRole(NotRoleException e) {
+    public ResponseEntity<Result<Void>> onNotRole(NotRoleException e) {
         log.warn("越权访问:需要角色 {}", e.getRole());
-        return Result.fail(ErrorCode.FORBIDDEN);
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Result.fail(ErrorCode.FORBIDDEN));
     }
 
     /**
@@ -77,10 +84,17 @@ public class GlobalExceptionHandler {
         return Result.fail(ErrorCode.SERVICE_DEGRADED);
     }
 
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<Result<Void>> onNotFound(NoResourceFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Result.fail(ErrorCode.NOT_FOUND));
+    }
+
     @ExceptionHandler(Exception.class)
-    public Result<Void> onUnexpected(Exception e) {
+    public ResponseEntity<Result<Void>> onUnexpected(Exception e) {
         log.error("未预期异常", e);
         // 不把 e.getMessage() 返给前端:堆栈/SQL 片段可能带表名、列名甚至参数值
-        return Result.fail(ErrorCode.INTERNAL_ERROR);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Result.fail(ErrorCode.INTERNAL_ERROR));
     }
 }

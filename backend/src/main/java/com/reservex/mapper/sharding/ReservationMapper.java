@@ -2,7 +2,6 @@ package com.reservex.mapper.sharding;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.Reservation;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDateTime;
@@ -25,7 +24,6 @@ import java.time.LocalDateTime;
  * **只有核销带 {@code version=?}**(STAFF 先看详情页再点核销,能挡"页面数据已过期")。
  * 这不是漏写,改成统一带 version 会让窗口期取消无法实现。
  */
-@Mapper
 public interface ReservationMapper extends BaseMapper<Reservation> {
 
     /**

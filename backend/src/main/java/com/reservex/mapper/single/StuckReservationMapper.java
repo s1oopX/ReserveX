@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.StuckReservation;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDateTime;
@@ -11,7 +10,6 @@ import java.util.List;
 /**
  * 卡单 Mapper(**单库**)。scanner 补投耗尽后转人工的落点。
  */
-@Mapper
 public interface StuckReservationMapper extends BaseMapper<StuckReservation> {
 
     /**

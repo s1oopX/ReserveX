@@ -2,7 +2,6 @@ package com.reservex.mapper.single;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.SlotBucket;
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
@@ -13,7 +12,6 @@ import java.util.List;
  * <p>⚠️ <b>复合主键 {@code (slot_id, bucket_no)} → 不能用 {@code selectById} /
  * {@code updateById}</b>(见 {@link SlotBucket} 类注释)。
  */
-@Mapper
 public interface SlotBucketMapper extends BaseMapper<SlotBucket> {
 
     /**
