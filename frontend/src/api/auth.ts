@@ -14,9 +14,9 @@ export interface RegisterReq {
   phone: string
   password: string
   idCard: string
-  captchaToken: string
-  captchaCode: string
 }
+
+let currentRefreshToken: string | null = null
 
 export const authApi = {
   /**
@@ -31,6 +31,7 @@ export const authApi = {
   login: async (email: string, password: string) => {
     const r = await http.post<LoginResult>('/auth/login', { email, password })
     setAccessToken(r.accessToken)
+    currentRefreshToken = r.refreshToken
     return r
   },
 
@@ -39,6 +40,7 @@ export const authApi = {
   refresh: async (refreshToken: string) => {
     const r = await http.post<LoginResult>('/auth/refresh', { refreshToken })
     setAccessToken(r.accessToken)
+    currentRefreshToken = r.refreshToken
     return r
   },
 
@@ -50,12 +52,17 @@ export const authApi = {
    */
   logout: async () => {
     try {
-      await http.post<null>('/auth/logout')
+      await http.post<null>('/auth/logout',
+        currentRefreshToken ? { refreshToken: currentRefreshToken } : undefined)
     } finally {
       setAccessToken(null)
+      currentRefreshToken = null
     }
   },
 
-  changePassword: (oldPassword: string, newPassword: string, onceToken?: string) =>
-    http.post<null>('/auth/password', { oldPassword, newPassword, onceToken }),
+  changePassword: async (oldPassword: string, newPassword: string, onceToken?: string) => {
+    await http.post<null>('/auth/password', { oldPassword, newPassword, onceToken })
+    setAccessToken(null)
+    currentRefreshToken = null
+  },
 }

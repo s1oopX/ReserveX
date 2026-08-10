@@ -37,4 +37,11 @@
           AND `password` = #{sentinel}
     </update>
 
+    <update id="updatePassword">
+        UPDATE `user`
+        SET `password`  = #{bcrypt},
+            `update_at` = #{updateAt}
+        WHERE `user_id` = #{userId}
+    </update>
+
 </mapper>

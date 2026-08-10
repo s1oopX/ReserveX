@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import Login from './pages/Login'
+import ChangePassword from './pages/ChangePassword'
 import SlotList from './pages/SlotList'
 import MyReservations from './pages/MyReservations'
 import ReservationQr from './pages/ReservationQr'
@@ -17,13 +18,14 @@ import AdminReconcile from './pages/admin/AdminReconcile'
  *    (Sa-Token 注解 + 归属校验)。把 /admin 藏起来不等于保护它:
  *    攻击者直接打 API 就绕过了整个前端。
  *
- * v1 只落这 7 页(07 §四 的 ~20 页里的 MVP 四链路:抢号 / 放号可见 / 核销 / 对账)。
+ * v1 只落 MVP 页面(07 §四的抢号 / 放号可见 / 核销 / 对账链路)。
  * 其余页面按 07 §四 清单逐个补,路由表是唯一登记处。
  */
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/change-password" element={<ChangePassword />} />
       <Route path="/" element={<SlotList />} />
       <Route path="/mine" element={<MyReservations />} />
       <Route path="/reservation/:rno/qr" element={<ReservationQr />} />

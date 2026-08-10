@@ -37,4 +37,8 @@ public interface UserMapper extends BaseMapper<User> {
                                @Param("sentinel") String sentinel,
                                @Param("bcrypt") String bcrypt,
                                @Param("updateAt") java.time.LocalDateTime updateAt);
+
+    int updatePassword(@Param("userId") Long userId,
+                       @Param("bcrypt") String bcrypt,
+                       @Param("updateAt") java.time.LocalDateTime updateAt);
 }

@@ -35,8 +35,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Result<Void>> onBiz(BizException e) {
         // 预期内失败,不打栈:它们量大(库存不足/限流)且无诊断价值
         log.debug("业务异常 code={} msg={}", e.getErrorCode().getCode(), e.getMessage());
-        HttpStatus status = e.getErrorCode() == ErrorCode.RATE_LIMITED
-                ? HttpStatus.TOO_MANY_REQUESTS : HttpStatus.OK;
+        HttpStatus status = switch (e.getErrorCode()) {
+            case UNAUTHORIZED -> HttpStatus.UNAUTHORIZED;
+            case FORBIDDEN -> HttpStatus.FORBIDDEN;
+            case NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case RATE_LIMITED -> HttpStatus.TOO_MANY_REQUESTS;
+            default -> HttpStatus.OK;
+        };
         return ResponseEntity.status(status).body(Result.fail(e.getErrorCode(), e.getMessage()));
     }
 

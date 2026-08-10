@@ -30,8 +30,12 @@ export default function Login() {
     } catch (err) {
       if (!isApiError(err)) throw err
       if (err.code === Code.PASSWORD_CHANGE_REQUIRED) {
-        setMsg('首次登录必须修改密码')
-        // v1 简化:强制改密页待补(07 §四 清单),此处先停在提示
+        const onceToken = (err.data as { onceToken?: unknown } | null)?.onceToken
+        if (typeof onceToken === 'string') {
+          nav('/change-password', { state: { onceToken } })
+        } else {
+          setMsg('强制改密凭证缺失，请重新登录')
+        }
       } else if (err.code === Code.LOGIN_FAILED) {
         setMsg('邮箱或密码错误')
       } else {

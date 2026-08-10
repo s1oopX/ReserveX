@@ -88,6 +88,9 @@ sa-token:
   token-style: uuid
   is-concurrent: true              # 允许同账号多端
   is-share: false                  # 每次登录新 token(共享 token 下无法按端注销)
+  is-read-cookie: false            # 前端只用 Authorization header,不把 JWT 落进 cookie
+  is-read-body: false
+  is-write-header: false           # token 在统一响应包 data 中返回
   jwt-secret-key: ${JWT_SECRET}    # 第四把独立密钥,不复用 QR_HMAC_KEY / AES_KEY
   timeout: 1800                    # access 30min
   active-timeout: -1               # 旧名 activity-timeout 在 1.39 已改名 active-timeout
@@ -281,5 +284,4 @@ reservex:
       reminder: { min: 2, max: 4 }     # 与 executor.mail 同量级,别让邮件把池占满
     # ⚠️ 必须 1:D6 五阶段是**单条**语义,批量消费下一条失败会把整批重投 → 已成功的被重复执行
     consume-message-batch-max-size: 1
-
 

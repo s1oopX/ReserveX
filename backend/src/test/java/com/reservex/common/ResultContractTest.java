@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -25,6 +27,11 @@ class ResultContractTest {
             assertEquals("req-1", json.get("requestId").asText());
             assertFalse(json.has("message"));
             assertFalse(json.has("ok"));
+
+            var forced = mapper.readTree(mapper.writeValueAsString(
+                    Result.failWithData(ErrorCode.PASSWORD_CHANGE_REQUIRED,
+                            Map.of("onceToken", "once-1"))));
+            assertEquals("once-1", forced.get("data").get("onceToken").asText());
         } finally {
             MDC.remove(RequestIdFilter.MDC_KEY);
         }
