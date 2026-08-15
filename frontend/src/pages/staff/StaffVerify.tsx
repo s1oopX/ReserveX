@@ -1,94 +1,322 @@
-import { useState } from 'react'
-import { staffApi, type VerifyResult } from '@/api/staff'
-import { Code } from '@/api/codes'
+import { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { QrCode, FileText, Scan, RefreshCw, AlertTriangle } from 'lucide-react'
+import { staffApi } from '@/api/staff'
 import { isApiError } from '@/api/http'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/button'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { AlertDialog } from '@/components/ui/alert-dialog'
+import { VerifyResultView, type VerifyResultData } from '@/components/common/VerifyResult'
 
-/**
- * 扫码核销(07 §3.4 核销闭环)。
- *
- * ⚠️ payload 从二维码解析出来后**原样提交**,不解析、不重排、不 pretty-print ——
- *    签名覆盖全部字段及其顺序,前端动一下就验签失败,而报错是"无效二维码",
- *    现场会以为是游客的码有问题。
- *
- * ⚠️ ALREADY_VERIFIED **不是失败**:它要展示首次核销时间与操作人(后端在 data 里回带)。
- *    工作人员据此判断是"游客重复扫"还是"同事已放行",这是现场唯一的判据。
- *
- * ⚠️ RESERVATION_CONFIRMING(窗口期核销:DB 查无但 occupy 在)要提示"稍候重试",
- *    **不能提示"预约不存在"** —— 那会让工作人员把有效游客拦在门外。
- */
 export default function StaffVerify() {
-  const [payload, setPayload] = useState('')
-  const [result, setResult] = useState<VerifyResult | null>(null)
-  const [msg, setMsg] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') === 'manual' ? 'manual' : 'scan'
+  const [tab, setTab] = useState<'scan' | 'manual'>(initialTab)
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault()
-    setBusy(true)
-    setMsg('')
-    setResult(null)
+  const [scanPayload, setScanPayload] = useState<string>('')
+  const [scanBusy, setScanBusy] = useState<boolean>(false)
+  const [verifyResult, setVerifyResult] = useState<VerifyResultData | null>(null)
+  const scanInputRef = useRef<HTMLInputElement>(null)
+
+  const [manualRno, setManualRno] = useState<string>('')
+  const [maskedConfirm, setMaskedConfirm] = useState<string>('')
+  const [manualBusy, setManualBusy] = useState<boolean>(false)
+  const [confirmOpen, setConfirmOpen] = useState<boolean>(false)
+
+  useEffect(() => {
+    if (tab === 'scan') {
+      scanInputRef.current?.focus()
+    }
+  }, [tab])
+
+  const handleScanSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault()
+    if (!scanPayload.trim() || scanBusy) return
+    setScanBusy(true)
+    setVerifyResult(null)
+
     try {
-      setResult(await staffApi.verifyScan(payload))
-      setPayload('')
+      const res = await staffApi.verifyScan(scanPayload.trim())
+      setVerifyResult({
+        type: 'success',
+        reservationNo: res.reservationNo,
+        verifyTime: res.verifyTime,
+        staffId: res.staffId,
+      })
     } catch (err) {
-      if (!isApiError(err)) throw err
-      switch (err.code) {
-        case Code.ALREADY_VERIFIED:
-          // data 里带首次核销信息,当成"结果"展示而非"错误"
-          setResult(err.data as VerifyResult)
-          break
-        case Code.RESERVATION_CONFIRMING:
-          setMsg('预约正在确认,请稍候重试(不要放行)')
-          break
-        case Code.QR_EXPIRED:
-          setMsg('二维码已过期,请游客刷新后重扫')
-          break
-        default:
-          setMsg(err.message)
+      if (isApiError(err)) {
+        if (err.code === 'ALREADY_VERIFIED') {
+          const firstView = err.data as { verifyTime?: string; staffId?: string } | null
+          setVerifyResult({
+            type: 'already_verified',
+            reservationNo: (err.data as { reservationNo?: string })?.reservationNo || '未知',
+            verifyTime: firstView?.verifyTime || null,
+            staffId: firstView?.staffId || null,
+          })
+        } else {
+          setVerifyResult({
+            type: 'error',
+            errorCode: err.code,
+            errorMessage: err.message,
+          })
+        }
+      } else {
+        setVerifyResult({
+          type: 'error',
+          errorMessage: '核销请求异常，请检查网络后重试',
+        })
       }
     } finally {
-      setBusy(false)
+      setScanBusy(false)
+    }
+  }
+
+  const handleContinueScan = () => {
+    setScanPayload('')
+    setVerifyResult(null)
+    setTimeout(() => {
+      scanInputRef.current?.focus()
+    }, 50)
+  }
+
+  const handleManualSubmit = async () => {
+    if (!manualRno.trim() || !maskedConfirm.trim() || manualBusy) return
+    setManualBusy(true)
+    setConfirmOpen(false)
+    setVerifyResult(null)
+
+    try {
+      const res = await staffApi.verifyManual(manualRno.trim(), maskedConfirm.trim())
+      setVerifyResult({
+        type: 'success',
+        reservationNo: res.reservationNo,
+        verifyTime: res.verifyTime,
+        staffId: res.staffId,
+      })
+    } catch (err) {
+      if (isApiError(err)) {
+        if (err.code === 'ALREADY_VERIFIED') {
+          const firstView = err.data as { verifyTime?: string; staffId?: string } | null
+          setVerifyResult({
+            type: 'already_verified',
+            reservationNo: manualRno.trim(),
+            verifyTime: firstView?.verifyTime || null,
+            staffId: firstView?.staffId || null,
+          })
+        } else {
+          setVerifyResult({
+            type: 'error',
+            errorCode: err.code,
+            errorMessage: err.message,
+          })
+        }
+      } else {
+        setVerifyResult({
+          type: 'error',
+          errorMessage: '手工核销请求提交失败',
+        })
+      }
+    } finally {
+      setManualBusy(false)
     }
   }
 
   return (
-    <main className="mx-auto max-w-lg p-6">
-      <h1 className="text-xl font-semibold">扫码核销</h1>
-      <form onSubmit={submit} className="mt-4 space-y-3">
-        {/* v1 用文本框接收扫码枪输入;摄像头扫码是 v2(07 §四) */}
-        <textarea
-          required
-          rows={4}
-          value={payload}
-          onChange={(e) => setPayload(e.target.value)}
-          placeholder="扫码枪输入或粘贴二维码内容"
-          className="w-full rounded border p-3 font-mono text-xs"
-        />
-        <button
-          type="submit"
-          disabled={busy}
-          className="w-full rounded bg-emerald-600 px-4 py-2 text-white disabled:bg-gray-300"
-        >
-          {busy ? '核销中…' : '核销'}
-        </button>
-      </form>
-
-      {msg && (
-        <p role="alert" className="mt-4 rounded bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          {msg}
+    <div className="space-y-6 max-w-2xl mx-auto">
+      <div className="border-b pb-3">
+        <h1 className="text-xl font-bold tracking-tight text-foreground font-serif">
+          核销工作台
+        </h1>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          支持扫码枪快速核销与证件号人工手工补验
         </p>
-      )}
-      {result && (
-        <div className="mt-4 rounded border p-4">
-          <p className="font-medium">
-            {result.status === 'VERIFIED' ? '核销成功,请放行' : '该预约此前已核销'}
-          </p>
-          <p className="text-sm text-gray-500">编号 {result.reservationNo}</p>
-          {result.verifyTime && (
-            <p className="text-sm text-gray-500">首次核销于 {result.verifyTime}</p>
-          )}
+      </div>
+
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          setTab(v as 'scan' | 'manual')
+          setSearchParams({ tab: v })
+          setVerifyResult(null)
+        }}
+      >
+        <TabsList className="grid w-full grid-cols-2 h-12">
+          <TabsTrigger value="scan" className="gap-2 text-sm font-semibold min-h-[44px]">
+            <QrCode className="h-4 w-4" />
+            <span>扫码枪核销</span>
+          </TabsTrigger>
+          <TabsTrigger value="manual" className="gap-2 text-sm font-semibold min-h-[44px]">
+            <FileText className="h-4 w-4" />
+            <span>手工登记核销</span>
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="scan" className="mt-4 space-y-4">
+          <Card className="shadow-sm border">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-bold flex items-center gap-2">
+                <Scan className="h-5 w-5 text-primary" />
+                <span>扫码枪自动录入</span>
+              </CardTitle>
+              <CardDescription className="text-xs">
+                页面加载后已自动聚焦输入框。扫码枪扫描完成后将自动提交验证。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <form onSubmit={handleScanSubmit} className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="scan-payload-input" className="text-xs font-semibold">
+                    QR 码 Payload 载荷
+                  </Label>
+                  <Input
+                    id="scan-payload-input"
+                    ref={scanInputRef}
+                    type="text"
+                    required
+                    placeholder="请使用扫码枪对准入园二维码扫描..."
+                    value={scanPayload}
+                    onChange={(e) => setScanPayload(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        handleScanSubmit()
+                      }
+                    }}
+                    className="font-mono text-sm h-12 bg-card"
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <Button
+                    type="submit"
+                    disabled={scanBusy || !scanPayload.trim()}
+                    className="flex-1 min-h-[44px] font-semibold"
+                  >
+                    {scanBusy ? '验证中…' : '手动提交核销'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setScanPayload('')
+                      scanInputRef.current?.focus()
+                    }}
+                    className="min-h-[44px]"
+                  >
+                    清空输入
+                  </Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="manual" className="mt-4 space-y-4">
+          <Card className="shadow-sm border">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-bold flex items-center gap-2">
+                <FileText className="h-5 w-5 text-teal-700" />
+                <span>手工凭证核销</span>
+              </CardTitle>
+              <CardDescription className="text-xs">
+                手工核销会记录审计日志（MANUAL_VERIFY），请仔细核对游客证件。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (manualRno.trim() && maskedConfirm.trim()) setConfirmOpen(true)
+                }}
+                className="space-y-3.5"
+              >
+                <div className="space-y-1.5">
+                  <Label htmlFor="manual-rno">预约编号 (rno)</Label>
+                  <Input
+                    id="manual-rno"
+                    type="text"
+                    required
+                    placeholder="请输入 19 位预约编号字符串"
+                    value={manualRno}
+                    onChange={(e) => setManualRno(e.target.value)}
+                    className="font-mono h-11"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="manual-masked">脱敏身份证号确认值</Label>
+                  <Input
+                    id="manual-masked"
+                    type="text"
+                    required
+                    placeholder="如: 110101********001X"
+                    value={maskedConfirm}
+                    onChange={(e) => setMaskedConfirm(e.target.value)}
+                    className="font-mono h-11"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    请输入完整脱敏串，需与后端预约记录保存的脱敏身份证号精确一致。
+                  </p>
+                </div>
+
+                <Alert variant="warning" className="border-amber-300 bg-amber-50">
+                  <AlertTriangle className="h-4 w-4 text-amber-700" />
+                  <AlertDescription className="text-xs text-amber-900 font-medium">
+                    提示：手工核销操作无法自动恢复，提交前必须核对游客出示的本人实体证件。
+                  </AlertDescription>
+                </Alert>
+
+                <Button
+                  type="submit"
+                  disabled={manualBusy || !manualRno.trim() || !maskedConfirm.trim()}
+                  className="w-full min-h-[44px] font-semibold"
+                >
+                  {manualBusy ? '处理中…' : '提交手工核销二次确认'}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+
+      {verifyResult && (
+        <div className="space-y-3 pt-2">
+          <VerifyResultView data={verifyResult} />
+
+          <div className="flex justify-end">
+            <Button onClick={handleContinueScan} className="gap-2 min-h-[44px]">
+              <RefreshCw className="h-4 w-4" />
+              <span>继续扫描 / 继续核销</span>
+            </Button>
+          </div>
         </div>
       )}
-    </main>
+
+      <AlertDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="确认执行手工核销？"
+        confirmText="确认核销并记录日志"
+        cancelText="取消"
+        busy={manualBusy}
+        onConfirm={handleManualSubmit}
+        description={
+          <div className="space-y-2 text-sm text-foreground mt-2">
+            <p>您即将对以下预约进行手工核销录入：</p>
+            <div className="rounded bg-muted p-3 text-xs font-mono space-y-1">
+              <div>预约编号: {manualRno}</div>
+              <div>脱敏证件确认: {maskedConfirm}</div>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              此操作将向审计日志写入 MANUAL_VERIFY 操作记录。
+            </div>
+          </div>
+        }
+      />
+    </div>
   )
 }

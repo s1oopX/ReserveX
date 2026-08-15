@@ -9,9 +9,9 @@ export interface ApiResult<T> {
 }
 
 /**
- * 业务失败以异常形式抛出,把 code 一起带上 —— 调用方 `catch (e) { if (isApiError(e) …) }`
- * 就能按 code 分支,而不必在每个调用点解一遍响应包。
- */
+  * 业务失败以异常形式抛出,把 code 一起带上 —— 调用方 `catch (e) { if (isApiError(e) …) }`
+  * 就能按 code 分支,而不必在每个调用点解一遍响应包。
+  */
 export class ApiError extends Error {
   constructor(
     readonly code: string,
@@ -28,33 +28,63 @@ export function isApiError(e: unknown): e is ApiError {
   return e instanceof ApiError
 }
 
-let accessToken: string | null = null
+const ACCESS_KEY = 'reservex.access'
+const REFRESH_KEY = 'reservex.refresh'
+const ROLE_KEY = 'reservex.role'
+
+let accessToken: string | null = sessionStorage.getItem(ACCESS_KEY)
+
+export function getAccessToken(): string | null {
+  return accessToken
+}
 
 export function setAccessToken(t: string | null): void {
   accessToken = t
+  if (t) sessionStorage.setItem(ACCESS_KEY, t)
+  else sessionStorage.removeItem(ACCESS_KEY)
 }
 
-/**
- * ⚠️ **ID 全程当字符串**(07 §3·补·4)。
- *
- * 后端已把所有 Snowflake ID 序列化成字符串,前端这一侧的纪律是
- * **绝不把它塞进任何会经过 `Number()` 的路径** —— 包括看似无害的
- * `Number(rno)`、`parseInt(rno)`、`+rno`、`rno > 0` 这类隐式转换。
- *
- * 后果不是报错,而是**末 2~3 位被静默改写**:轻则取码时 RESERVATION_NOT_FOUND
- * (用户看到"预约成功"却取不到码),重则改写后恰好命中另一条真实 rno
- * —— 越权读到他人的码,而后端的归属校验挡不住(它校验"这个 rno 属不属于我",
- * 而攻击者不需要伪造,精度丢失自己就把 rno 改成了邻居的)。
- *
- * ⚠️ 同理 `slotDate` 不要用 `new Date("2026-08-10")` 中转:浏览器按 UTC 解析,
- *    在负时区机器上显示会差一天。演示环境不暴露,换台机器就错。直接当字符串用。
- */
+export function getRefreshToken(): string | null {
+  return sessionStorage.getItem(REFRESH_KEY)
+}
+
+export function clearSession(): void {
+  accessToken = null
+  sessionStorage.removeItem(ACCESS_KEY)
+  sessionStorage.removeItem(REFRESH_KEY)
+  sessionStorage.removeItem(ROLE_KEY)
+}
+
 export type Id = string
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+let refreshPromise: Promise<string | null> | null = null
+
+async function doRefresh(): Promise<string | null> {
+  const refreshToken = getRefreshToken()
+  if (!refreshToken) return null
+  try {
+    const resp = await fetch('/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    })
+    if (!resp.ok) return null
+    const payload = (await resp.json()) as ApiResult<{ accessToken: string; refreshToken: string; role: string }>
+    if (payload.code === Code.OK && payload.data?.accessToken) {
+      setAccessToken(payload.data.accessToken)
+      sessionStorage.setItem(REFRESH_KEY, payload.data.refreshToken)
+      if (payload.data.role) sessionStorage.setItem(ROLE_KEY, payload.data.role)
+      return payload.data.accessToken
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function request<T>(method: string, path: string, body?: unknown, isRetry = false): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
-  // 08 §七 sa-token.token-name: Authorization
   if (accessToken) headers['Authorization'] = accessToken
 
   let resp: Response
@@ -65,17 +95,34 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch {
-    // 网络层失败没有 requestId —— 这一支必须与"后端返 500"区分开,
-    // 否则排障时会去后端日志里找一个根本不存在的 requestId
     throw new ApiError('NETWORK_ERROR', '网络连接失败,请检查网络', '')
   }
 
-  // 401/403/429/500 也带统一响应包(07 §3·补·1),照常解
   let payload: ApiResult<T>
   try {
     payload = (await resp.json()) as ApiResult<T>
   } catch {
     throw new ApiError('INTERNAL_ERROR', CodeText[Code.INTERNAL_ERROR], '')
+  }
+
+  // 检查 401 / UNAUTHORIZED
+  const isAuthPath = path.startsWith('/auth/login') || path.startsWith('/auth/register') || path.startsWith('/auth/refresh')
+  const isUnauthorized = resp.status === 401 || payload.code === Code.UNAUTHORIZED
+
+  if (isUnauthorized && !isAuthPath && !isRetry) {
+    if (!refreshPromise) {
+      refreshPromise = doRefresh().finally(() => {
+        refreshPromise = null
+      })
+    }
+    const newTok = await refreshPromise
+    if (newTok) {
+      return request<T>(method, path, body, true)
+    } else {
+      clearSession()
+      window.location.href = '/login'
+      throw new ApiError(Code.UNAUTHORIZED, CodeText[Code.UNAUTHORIZED], payload.requestId || '')
+    }
   }
 
   if (payload.code !== Code.OK) {

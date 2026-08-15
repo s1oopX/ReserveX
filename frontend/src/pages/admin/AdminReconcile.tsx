@@ -1,147 +1,410 @@
-import { useCallback, useEffect, useState } from 'react'
-import { adminApi, type ReconcileItem, type StuckItem } from '@/api/admin'
+import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { RefreshCw, Info, CheckCircle2 } from 'lucide-react'
+import { adminApi, type ReconcileItem, type StuckItem, type DlqView } from '@/api/admin'
+import type { Id } from '@/api/http'
 import { isApiError } from '@/api/http'
+import { toast } from '@/components/ui/sonner'
+import { Card } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@/components/ui/table'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Skeleton } from '@/components/ui/skeleton'
+import { ErrorState } from '@/components/common/ErrorState'
 
-type Tab = 'diff' | 'stuck' | 'dlq'
-
-/**
- * 对账中心 三 Tab(07 §4.1 / 06 §十一类对账)。
- *
- * ⚠️ 每个动作(修复 / 重投 / 回滚 / 忽略)都会改真实库存或预约状态,
- *    所以:① 必须二次确认;② 后端必须写 audit_log。
- *    "只是个内部页面"是最危险的想法 —— 这三个 Tab 的按钮比任何用户端接口都重。
- *
- * ⚠️ diff 非零**不代表一定有 bug**:对账在读 Redis 与 DB 两个时点之间,
- *    正常抢号也会造成瞬时差。判据是**同一 slot 连续多个周期 diff 不收敛**。
- *    把每次非零都当故障处理,会淹没真正的异常。
- */
 export default function AdminReconcile() {
-  const [tab, setTab] = useState<Tab>('diff')
-  const [diff, setDiff] = useState<ReconcileItem[]>([])
-  const [stuck, setStuck] = useState<StuckItem[]>([])
-  const [dlq, setDlq] = useState<unknown[]>([])
-  const [msg, setMsg] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') || 'diff'
+  const [tab, setTab] = useState<string>(initialTab)
 
-  const load = useCallback(
-    (t: Tab) => {
-      setMsg('')
-      const p =
-        t === 'diff'
-          ? adminApi.reconcileDiff().then(setDiff)
-          : t === 'stuck'
-            ? adminApi.reconcileStuck().then(setStuck)
-            : adminApi.reconcileDlq().then(setDlq)
-      p.catch((e) => setMsg(isApiError(e) ? e.message : '加载失败'))
-    },
-    [],
-  )
+  const [diffList, setDiffList] = useState<ReconcileItem[] | null>(null)
+  const [latestList, setLatestList] = useState<ReconcileItem[] | null>(null)
+  const [stuckList, setStuckList] = useState<StuckItem[] | null>(null)
+  const [dlqView, setDlqView] = useState<DlqView | null>(null)
+  const [acting, setActing] = useState<string>('')
 
-  useEffect(() => load(tab), [tab, load])
+  const [loading, setLoading] = useState<boolean>(true)
+  const [errorMsg, setErrorMsg] = useState<string>('')
+  const [requestId, setRequestId] = useState<string>('')
 
-  async function act(type: Tab, id: string, action: string, label: string) {
-    if (!window.confirm(`确定对 ${id} 执行「${label}」?该操作会写入审计日志。`)) return
-    try {
-      await adminApi.reconcileAction(type, id, action)
-      load(type)
-    } catch (e) {
-      setMsg(isApiError(e) ? e.message : '操作失败')
+  const loadData = useCallback(() => {
+    setLoading(true)
+    setErrorMsg('')
+    setRequestId('')
+
+    if (tab === 'diff') {
+      adminApi
+        .reconcileDiff()
+        .then((data) => {
+          setDiffList(data)
+          setLoading(false)
+        })
+        .catch((err) => {
+          setLoading(false)
+          if (isApiError(err)) {
+            setErrorMsg(err.message)
+            setRequestId(err.requestId)
+          } else {
+            setErrorMsg('获取库存差异对账明细失败')
+          }
+        })
+    } else if (tab === 'latest') {
+      adminApi
+        .reconcileLatest()
+        .then((data) => {
+          setLatestList(data)
+          setLoading(false)
+        })
+        .catch((err) => {
+          setLoading(false)
+          if (isApiError(err)) {
+            setErrorMsg(err.message)
+            setRequestId(err.requestId)
+          } else {
+            setErrorMsg('获取最新对账日志失败')
+          }
+        })
+    } else if (tab === 'stuck') {
+      adminApi
+        .reconcileStuck()
+        .then((data) => {
+          setStuckList(data)
+          setLoading(false)
+        })
+        .catch((err) => {
+          setLoading(false)
+          if (isApiError(err)) {
+            setErrorMsg(err.message)
+            setRequestId(err.requestId)
+          } else {
+            setErrorMsg('获取卡单明细失败')
+          }
+        })
+    } else if (tab === 'dlq') {
+      adminApi
+        .reconcileDlq()
+        .then((data) => {
+          setDlqView(data)
+          setLoading(false)
+        })
+        .catch((err) => {
+          setLoading(false)
+          if (isApiError(err)) {
+            setErrorMsg(err.message)
+            setRequestId(err.requestId)
+          } else {
+            setErrorMsg('获取死信队列失败')
+          }
+        })
     }
+  }, [tab])
+
+  useEffect(() => {
+    loadData()
+  }, [loadData])
+
+  const doAction = (type: 'diff' | 'stuck' | 'dlq', id: Id, action: string) => {
+    const key = `${action}-${id}`
+    setActing(key)
+    adminApi
+      .reconcileAction(type, id, action)
+      .then((affected) => {
+        setActing('')
+        toast.success(action === 'rollback' ? `已回滚 (受影响 ${affected})` : `已处理 (受影响 ${affected})`, '处置完成')
+        loadData()
+      })
+      .catch((err) => {
+        setActing('')
+        toast.error(isApiError(err) ? err.message : '处置失败')
+      })
   }
 
   return (
-    <main className="mx-auto max-w-5xl p-6">
-      <h1 className="text-xl font-semibold">对账中心</h1>
-      <nav className="mt-4 flex gap-2" role="tablist">
-        {(
-          [
-            ['diff', '库存差异'],
-            ['stuck', '卡单'],
-            ['dlq', '死信'],
-          ] as const
-        ).map(([k, label]) => (
-          <button
-            key={k}
-            type="button"
-            role="tab"
-            aria-selected={tab === k}
-            onClick={() => setTab(k)}
-            className={`rounded border px-4 py-2 text-sm ${tab === k ? 'bg-gray-100 font-medium' : ''}`}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
-
-      {msg && (
-        <p role="alert" className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700">
-          {msg}
-        </p>
-      )}
-
-      {tab === 'diff' && (
-        <>
-          <p className="mt-3 text-sm text-gray-500">
-            单次 diff 非零可能只是读取时点差异,应关注同一场次连续多周期不收敛的记录。
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b pb-4">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight text-foreground font-serif">
+            对账中心与对齐控制
+          </h1>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            监控 Redis 与 DB 差异、卡单转人工及 DLQ 消息
           </p>
-          <ul className="mt-3 space-y-2 text-sm">
-            {diff.map((d) => (
-              <li key={d.id} className="flex items-center justify-between rounded border p-3">
-                <span>
-                  {d.taskType} · 场次 {d.slotId} · 差异 {d.diff} · {d.createAt}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => act('diff', d.id, 'repair', '修复')}
-                  className="rounded border px-3 py-1"
-                >
-                  修复
-                </button>
-              </li>
-            ))}
-            {diff.length === 0 && <li className="text-gray-500">无差异记录</li>}
-          </ul>
-        </>
-      )}
+        </div>
+        <Button variant="outline" size="sm" onClick={loadData} className="gap-1.5">
+          <RefreshCw className="h-4 w-4" />
+          <span>刷新此 Tab</span>
+        </Button>
+      </div>
 
-      {tab === 'stuck' && (
-        <ul className="mt-3 space-y-2 text-sm">
-          {stuck.map((s) => (
-            <li key={s.reservationNo} className="rounded border p-3">
-              <div className="flex items-center justify-between">
-                <span>
-                  {s.reservationNo} · 场次 {s.slotId} · 重投 {s.reinjectCount} 次
-                </span>
-                <span className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => act('stuck', s.reservationNo, 'reinject', '重投')}
-                    className="rounded border px-3 py-1"
-                  >
-                    重投
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => act('stuck', s.reservationNo, 'rollback', '回滚')}
-                    className="rounded border px-3 py-1 text-red-600"
-                  >
-                    回滚
-                  </button>
-                </span>
-              </div>
-              {s.lastError && (
-                <p className="mt-2 break-all font-mono text-xs text-gray-500">{s.lastError}</p>
+      <Alert variant="warning" className="border-amber-300 bg-amber-50">
+        <Info className="h-4 w-4 text-amber-700" />
+        <AlertDescription className="text-xs text-amber-900 font-medium leading-relaxed">
+          <strong>对账说明：</strong> 单次差异可能来自读取时点不同（在途消息），应重点关注<strong>连续多个周期未收敛的差异</strong>。
+        </AlertDescription>
+      </Alert>
+
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          setTab(v)
+          setSearchParams({ tab: v })
+        }}
+      >
+        <TabsList className="w-full justify-start">
+          <TabsTrigger value="diff">库存差异记录</TabsTrigger>
+          <TabsTrigger value="latest">最新全量对账日志</TabsTrigger>
+          <TabsTrigger value="stuck">卡单列表 (stuck)</TabsTrigger>
+          <TabsTrigger value="dlq">死信队列 (DLQ)</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="diff" className="mt-4">
+          <ReconcileTableShell
+            loading={loading}
+            errorMsg={errorMsg}
+            requestId={requestId}
+            onRetry={loadData}
+          >
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableRowDiffHeaders />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {!diffList || diffList.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                      <CheckCircle2 className="h-6 w-6 text-emerald-600 inline mr-2" />
+                      当前无库存差异，全园 Redis 与 DB 账目完美一致。
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  diffList.map((item) => (
+                    <TableRowDiffItem key={item.id} item={item} />
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </ReconcileTableShell>
+        </TabsContent>
+
+        <TabsContent value="latest" className="mt-4">
+          <ReconcileTableShell
+            loading={loading}
+            errorMsg={errorMsg}
+            requestId={requestId}
+            onRetry={loadData}
+          >
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableRowDiffHeaders />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {!latestList || latestList.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                      暂无最新对账日志记录。
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  latestList.map((item) => (
+                    <TableRowDiffItem key={item.id} item={item} />
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </ReconcileTableShell>
+        </TabsContent>
+
+        <TabsContent value="stuck" className="mt-4">
+          <ReconcileTableShell
+            loading={loading}
+            errorMsg={errorMsg}
+            requestId={requestId}
+            onRetry={loadData}
+          >
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>预约编号 (rno)</TableHead>
+                  <TableHead>场次 ID</TableHead>
+                  <TableHead>补投次数</TableHead>
+                  <TableHead>最后错误原因</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>创建时间</TableHead>
+                  <TableHead className="text-right">处置操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {!stuckList || stuckList.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                      <CheckCircle2 className="h-6 w-6 text-emerald-600 inline mr-2" />
+                      当前无待研判的卡单记录。
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  stuckList.map((item) => (
+                    <TableRow key={item.reservationNo}>
+                      <TableCell className="font-mono text-xs font-bold text-foreground">
+                        {item.reservationNo}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">{item.slotId}</TableCell>
+                      <TableCell className="font-mono">{item.reinjectCount} 次</TableCell>
+                      <TableCell className="font-mono text-xs text-destructive max-w-xs truncate">
+                        {item.lastError || 'N/A'}
+                      </TableCell>
+                      <TableCell>
+                        {item.status === 0 ? (
+                          <Badge variant="warning">待研判</Badge>
+                        ) : item.status === 1 ? (
+                          <Badge variant="success">已成功重投</Badge>
+                        ) : (
+                          <Badge variant="outline">已回滚/忽略</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">{item.createAt}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex gap-1 justify-end">
+                          <Button size="sm" variant="outline" className="text-xs"
+                            disabled={item.status !== 0 || acting === `rollback-${item.reservationNo}`}
+                            onClick={() => doAction('stuck', item.reservationNo, 'rollback')}>
+                            {acting === `rollback-${item.reservationNo}` ? '...' : '人工回滚'}
+                          </Button>
+                          <Button size="sm" variant="outline" className="text-xs"
+                            disabled={item.status !== 0 || acting === `ignore-${item.reservationNo}`}
+                            onClick={() => doAction('stuck', item.reservationNo, 'ignore')}>
+                            {acting === `ignore-${item.reservationNo}` ? '...' : '忽略'}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </ReconcileTableShell>
+        </TabsContent>
+
+        <TabsContent value="dlq" className="mt-4 space-y-4">
+          <Alert variant="warning" className="border-amber-300 bg-amber-50">
+            <Info className="h-4 w-4 text-amber-700" />
+            <AlertDescription className="text-xs text-amber-900 font-medium leading-relaxed">
+              <strong>DLQ 监控说明：</strong>真实死信队列监控需 RocketMQ Dashboard。
+              {dlqView && (
+                <>当前待研判卡单数：<strong>{dlqView.stuckCount}</strong>。请前往「卡单列表」处置。</>
               )}
-            </li>
-          ))}
-          {stuck.length === 0 && <li className="text-gray-500">无卡单</li>}
-        </ul>
-      )}
-
-      {tab === 'dlq' && (
-        <pre className="mt-3 overflow-auto rounded border p-3 text-xs">
-          {JSON.stringify(dlq, null, 2)}
-        </pre>
-      )}
-    </main>
+              {dlqView?.reason && <><br />{dlqView.reason}</>}
+            </AlertDescription>
+          </Alert>
+          <ReconcileTableShell
+            loading={loading}
+            errorMsg={errorMsg}
+            requestId={requestId}
+            onRetry={loadData}
+          >
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Topic</TableHead>
+                  <TableHead>业务编号</TableHead>
+                  <TableHead>重试次数</TableHead>
+                  <TableHead>最后错误</TableHead>
+                  <TableHead>消息摘要</TableHead>
+                  <TableHead className="text-right">死信处置</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                    死信队列拉取接口当前返回空列表。请用「卡单列表」tab 查看待研判项。
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </ReconcileTableShell>
+        </TabsContent>
+      </Tabs>
+    </div>
   )
+}
+
+function TableRowDiffHeaders() {
+  return (
+    <>
+      <TableHead>对账周期 PERIOD</TableHead>
+      <TableHead>场次 ID</TableHead>
+      <TableHead>Redis 已占用</TableHead>
+      <TableHead>DB 桶已占用</TableHead>
+      <TableHead>有效预约数</TableHead>
+      <TableHead>Diff 差值</TableHead>
+      <TableHead>对账时间</TableHead>
+    </>
+  )
+}
+
+function TableRowDiffItem({ item }: { item: ReconcileItem }) {
+  const isDiff = item.diff !== 0
+  const redisOcc = item.redisOccupied ?? '-'
+  const dbOcc = item.dbOccupied ?? '-'
+  const resCnt = item.reservationCnt ?? '-'
+
+  return (
+    <TableRow className={isDiff ? 'bg-amber-50/50' : ''}>
+      <TableCell className="font-mono text-xs font-semibold">{item.period}</TableCell>
+      <TableCell className="font-mono text-xs text-muted-foreground">{item.slotId}</TableCell>
+      <TableCell className="font-mono">{redisOcc}</TableCell>
+      <TableCell className="font-mono">{dbOcc}</TableCell>
+      <TableCell className="font-mono text-emerald-800 font-semibold">{resCnt}</TableCell>
+      <TableCell className="font-mono">
+        {isDiff ? (
+          <Badge variant="destructive">{item.diff}</Badge>
+        ) : (
+          <Badge variant="outline" className="text-emerald-700 border-emerald-300">0 (收敛)</Badge>
+        )}
+      </TableCell>
+      <TableCell className="font-mono text-xs text-muted-foreground">{item.createAt}</TableCell>
+    </TableRow>
+  )
+}
+
+function ReconcileTableShell({
+  loading,
+  errorMsg,
+  requestId,
+  onRetry,
+  children,
+}: {
+  loading: boolean
+  errorMsg: string
+  requestId: string
+  onRetry: () => void
+  children: React.ReactNode
+}) {
+  if (loading) {
+    return (
+      <Card className="p-6 space-y-3">
+        <Skeleton className="h-6 w-full" />
+        <Skeleton className="h-6 w-full" />
+        <Skeleton className="h-6 w-full" />
+      </Card>
+    )
+  }
+
+  if (errorMsg) {
+    return (
+      <ErrorState
+        title="加载对账数据失败"
+        message={errorMsg}
+        requestId={requestId}
+        onRetry={onRetry}
+      />
+    )
+  }
+
+  return <Card className="shadow-2xs border">{children}</Card>
 }

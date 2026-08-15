@@ -1,41 +1,117 @@
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
+import { useAuth } from './context/AuthContext'
+import { PublicLayout } from './layouts/PublicLayout'
+import { UserLayout } from './layouts/UserLayout'
+import { StaffLayout } from './layouts/StaffLayout'
+import { AdminLayout } from './layouts/AdminLayout'
+import { RoleGuard } from './components/common/RoleGuard'
+import { Toaster } from './components/ui/sonner'
+
+import LandingPage from './pages/LandingPage'
 import Login from './pages/Login'
+import Register from './pages/Register'
 import ChangePassword from './pages/ChangePassword'
+import Notice from './pages/Notice'
+import Notifications from './pages/Notifications'
+import Profile from './pages/Profile'
+
 import SlotList from './pages/SlotList'
+import ReservationResult from './pages/ReservationResult'
 import MyReservations from './pages/MyReservations'
+import ReservationDetail from './pages/ReservationDetail'
 import ReservationQr from './pages/ReservationQr'
+
+import StaffToday from './pages/staff/StaffToday'
 import StaffVerify from './pages/staff/StaffVerify'
+import StaffReservations from './pages/staff/StaffReservations'
+
+import AdminDashboard from './pages/admin/AdminDashboard'
 import AdminTemplates from './pages/admin/AdminTemplates'
+import AdminSlots from './pages/admin/AdminSlots'
+import AdminReleaseMonitor from './pages/admin/AdminReleaseMonitor'
+import AdminReservations from './pages/admin/AdminReservations'
 import AdminReconcile from './pages/admin/AdminReconcile'
+import AdminStaff from './pages/admin/AdminStaff'
 
-/**
- * 三前端同一份产物、按路由前缀分区(07 §一):
- *   /            访客端
- *   /staff/*     核销端(STAFF)
- *   /admin/*     管理端(ADMIN,继承 STAFF 权限)
- *
- * ⚠️ 前端的路由守卫只是**体验**,不是安全边界 —— 真正的鉴权在后端每个接口上
- *    (Sa-Token 注解 + 归属校验)。把 /admin 藏起来不等于保护它:
- *    攻击者直接打 API 就绕过了整个前端。
- *
- * v1 只落 MVP 页面(07 §四的抢号 / 放号可见 / 核销 / 对账链路)。
- * 其余页面按 07 §四 清单逐个补,路由表是唯一登记处。
- */
+import { Error403, Error404, Error500 } from './pages/exceptions/ExceptionPages'
+
 export default function App() {
+  const { role } = useAuth()
+
+  const getLanding = () => {
+    if (role === 'ADMIN') return '/admin/dashboard'
+    if (role === 'STAFF') return '/staff/today'
+    return '/'
+  }
+
   return (
-    <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route path="/change-password" element={<ChangePassword />} />
-      <Route path="/" element={<SlotList />} />
-      <Route path="/mine" element={<MyReservations />} />
-      <Route path="/reservation/:rno/qr" element={<ReservationQr />} />
+    <>
+      <Routes>
+        {/* Public Landing Page */}
+        <Route path="/" element={<LandingPage />} />
 
-      <Route path="/staff/verify" element={<StaffVerify />} />
+        {/* Public Auth & Notice Routes */}
+        <Route element={<PublicLayout />}>
+          <Route path="/login" element={role ? <Navigate to={getLanding()} replace /> : <Login />} />
+          <Route path="/register" element={role ? <Navigate to={getLanding()} replace /> : <Register />} />
+          <Route path="/change-password" element={<ChangePassword />} />
+          <Route path="/notice" element={<Notice />} />
+          <Route path="/403" element={<Error403 />} />
+          <Route path="/404" element={<Error404 />} />
+          <Route path="/500" element={<Error500 />} />
+        </Route>
 
-      <Route path="/admin/templates" element={<AdminTemplates />} />
-      <Route path="/admin/reconcile" element={<AdminReconcile />} />
+        {/* Visitor / USER End Layout */}
+        <Route
+          element={
+            <RoleGuard allowedRoles={['USER']}>
+              <UserLayout />
+            </RoleGuard>
+          }
+        >
+          <Route path="/slots" element={<SlotList />} />
+          <Route path="/mine" element={<MyReservations />} />
+          <Route path="/profile" element={<Profile />} />
+          <Route path="/notifications" element={<Notifications />} />
+          <Route path="/reservation/:rno/result" element={<ReservationResult />} />
+          <Route path="/reservation/:rno" element={<ReservationDetail />} />
+          <Route path="/reservation/:rno/qr" element={<ReservationQr />} />
+        </Route>
 
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        {/* Staff / STAFF End Layout */}
+        <Route
+          element={
+            <RoleGuard allowedRoles={['STAFF', 'ADMIN']}>
+              <StaffLayout />
+            </RoleGuard>
+          }
+        >
+          <Route path="/staff/today" element={<StaffToday />} />
+          <Route path="/staff/verify" element={<StaffVerify />} />
+          <Route path="/staff/reservations" element={<StaffReservations />} />
+        </Route>
+
+        {/* Admin / ADMIN End Layout */}
+        <Route
+          element={
+            <RoleGuard allowedRoles={['ADMIN']}>
+              <AdminLayout />
+            </RoleGuard>
+          }
+        >
+          <Route path="/admin/dashboard" element={<AdminDashboard />} />
+          <Route path="/admin/templates" element={<AdminTemplates />} />
+          <Route path="/admin/slots" element={<AdminSlots />} />
+          <Route path="/admin/release-monitor" element={<AdminReleaseMonitor />} />
+          <Route path="/admin/reservations" element={<AdminReservations />} />
+          <Route path="/admin/reconcile" element={<AdminReconcile />} />
+          <Route path="/admin/staff" element={<AdminStaff />} />
+        </Route>
+
+        <Route path="*" element={<Error404 />} />
+      </Routes>
+
+      <Toaster />
+    </>
   )
 }

@@ -11,6 +11,16 @@ export interface VerifyResult {
   staffId: Id | null
 }
 
+/** 今日核销统计(StaffToday 工作台指标) */
+export interface VerifyStatsVO {
+  confirmed: string        // Java long -> JSON string
+  verified: string
+  cancelled: string
+  expired: string
+  successToday: string
+  attemptsToday: string
+}
+
 export const staffApi = {
   /**
    * 扫码核销。payload 是前端从 QR 图解析出的原始字符串,**不要解析/重排它**:
@@ -28,4 +38,7 @@ export const staffApi = {
 
   /** 今日工作台:本人负责场次的预约列表 */
   today: () => http.get<ReservationVO[]>('/staff/today'),
+
+  /** 今日核销统计指标 */
+  verifyStats: () => http.get<VerifyStatsVO>('/staff/verify-stats'),
 }

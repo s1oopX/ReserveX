@@ -69,6 +69,7 @@ export const CodeText: Record<string, string> = {
   [Code.TEMPLATE_INVALID]: '放号时点晚于场次结束,或容量小于分桶数',
 
   [Code.QUOTA_USED]: '您今天已有预约',
+  [Code.CAPTCHA_REQUIRED]: '请先完成图形验证',
   [Code.CAPTCHA_INVALID]: '验证码错误,请重试',
   [Code.RATE_LIMITED]: '预约人数较多,请稍后重试',
   [Code.SERVICE_DEGRADED]: '系统繁忙,请稍后重试',

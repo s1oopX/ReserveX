@@ -1,7 +1,5 @@
 import { http, type Id } from './http'
 
-/** 管理端接口(07 §3·补·3 / 07 §四) */
-
 export interface SlotTemplate {
   templateId: Id
   slotHour: number
@@ -23,6 +21,39 @@ export interface SlotDetail {
   released: boolean
   releaseAt: string
   version: number
+  remain?: number
+  metaPresent?: boolean
+}
+
+export interface ReleaseMonitorItem {
+  slotId: Id
+  slotDate: string
+  slotHour: number
+  released: boolean
+  capacity: number
+  bucketCount: number
+  version: number
+  metaComplete: boolean
+  bucketPresent: number
+  bucketExpected: number
+  redisRemain: number
+  releaseAt: string
+}
+
+export interface StaffAccount {
+  userId: Id
+  email: string
+  phone: string
+  idCardMasked: string
+  status: number
+  createAt: string
+}
+
+export interface DlqView {
+  items: unknown[]
+  source: string
+  reason: string
+  stuckCount: string
 }
 
 export interface ReconcileItem {
@@ -30,6 +61,9 @@ export interface ReconcileItem {
   taskType: string
   period: string
   slotId: Id
+  redisOccupied?: number
+  dbOccupied?: number
+  reservationCnt?: number
   diff: number
   createAt: string
 }
@@ -43,56 +77,60 @@ export interface StuckItem {
   createAt: string
 }
 
+/** 管理端预约视图(比用户视图多 userId,管理端需溯源用户) */
+export interface AdminReservationVO {
+  reservationNo: Id
+  userId: Id
+  slotId: Id
+  slotDate: string
+  status: string
+  version: number
+  createAt: string
+  verifyTime: string | null
+  idCardMasked: string | null
+}
+
 export interface DashboardVO {
-  todaySlots: number
-  todayReservations: number
-  todayVerified: number
-  reconcileDiffCount: number
-  stuckCount: number
+  todaySlots: number           // Java int -> JSON number
+  todayReservations: string    // Java long -> JSON string
+  todayVerified: string        // Java long -> JSON string
+  reconcileDiffCount: string   // Java long -> JSON string
+  stuckCount: string           // Java long -> JSON string
 }
 
 export const adminApi = {
-  // ---- 场次模板(03 §4.0 / §9.1)----------------------------------------
-  /**
-   * 模板 CRUD。
-   * ⚠️ 改模板**不影响已生成的场次**(copy-not-reference,03 §9.1):slot 是把模板值
-   *    拷进去的,不是引用。所以改了模板,明天生成的场次按新值,今天已放的不变。
-   * ⚠️ 删除只允许 enabled=0(停用);物理删除会让历史 slot.template_id 悬空。
-   */
   listTemplates: () => http.get<SlotTemplate[]>('/admin/slot-templates'),
   createTemplate: (tpl: Omit<SlotTemplate, 'templateId' | 'version'>) =>
     http.post<SlotTemplate>('/admin/slot-templates', tpl),
   updateTemplate: (id: Id, tpl: Partial<SlotTemplate>) =>
     http.put<SlotTemplate>(`/admin/slot-templates/${id}`, tpl),
 
-  // ---- 场次(slot)--------------------------------------------------------
   listSlots: (date: string) => http.get<SlotDetail[]>(`/admin/slots?date=${date}`),
   increaseCapacity: (slotId: Id, delta: number, version: number) =>
     http.post<null>(`/admin/slots/${slotId}/capacity`, { delta, version }),
 
-  // ---- 发布监控(07 §4.2)------------------------------------------------
-  releaseMonitor: () => http.get<unknown>('/admin/release-monitor'),
+  releaseMonitor: () => http.get<ReleaseMonitorItem[]>('/admin/release-monitor'),
 
-  // ---- 对账中心 3 Tab(07 §4.1)------------------------------------------
   reconcileDiff: () => http.get<ReconcileItem[]>('/admin/reconcile/diff'),
+  reconcileLatest: () => http.get<ReconcileItem[]>('/admin/reconcile/latest'),
   reconcileStuck: () => http.get<StuckItem[]>('/admin/reconcile/stuck'),
-  reconcileDlq: () => http.get<unknown[]>('/admin/reconcile/dlq'),
-  /**
-   * 卡单/死信动作(修复/重投/回滚/忽略)。
-   * ⚠️ 必须写 audit_log,前端要在请求前弹二次确认。
-   */
+  reconcileDlq: () => http.get<DlqView>('/admin/reconcile/dlq'),
   reconcileAction: (type: 'diff' | 'stuck' | 'dlq', id: Id, action: string) =>
-    http.post<null>(`/admin/reconcile/${type}/action`, { id, action }),
+    http.post<number>(`/admin/reconcile/${type}/action`, { id, action }),
 
-  // ---- 数据驾驶舱 + 容量水位(08 §6.4)-----------------------------------
   dashboard: () => http.get<DashboardVO>('/admin/dashboard'),
 
-  // ---- STAFF 管理(01 §一)----------------------------------------------
-  /**
-   * ⚠️ role 由**服务端**写死,不接受前端传 —— 任何能设 role 的 HTTP 端点
-   *    本身就是提权漏洞(07 §3·补·3 ⚠️ / 红线 #28)。
-   */
-  listStaff: () => http.get<unknown[]>('/admin/staff'),
-  createStaff: (email: string, password: string) =>
-    http.post<null>('/admin/staff', { email, password }),
+  /** 管理员全园预约查询(广播两库归并 + 脱敏)。参数皆可选 */
+  listReservations: (params: { rno?: string; slotDate?: string; status?: string }) => {
+    const qs = new URLSearchParams()
+    if (params.rno) qs.set('rno', params.rno)
+    if (params.slotDate) qs.set('slotDate', params.slotDate)
+    if (params.status) qs.set('status', params.status)
+    const query = qs.toString()
+    return http.get<AdminReservationVO[]>(`/admin/reservations${query ? '?' + query : ''}`)
+  },
+
+  listStaff: () => http.get<StaffAccount[]>('/admin/staff'),
+  createStaff: (email: string, password: string, phone: string, idCard: string) =>
+    http.post<null>('/admin/staff', { email, password, phone, idCard }),
 }
