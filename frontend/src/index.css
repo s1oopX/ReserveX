@@ -2,7 +2,112 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  font-family: ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
-  -webkit-font-smoothing: antialiased;
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 158 64% 28%;
+    --primary-foreground: 150 20% 98%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222 47% 11%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+
+    --warning: 38 92% 44%;
+    --warning-foreground: 0 0% 100%;
+
+    --success: 158 64% 32%;
+    --success-foreground: 0 0% 100%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 158 64% 28%;
+
+    --radius: 1rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased selection:bg-emerald-500/20 selection:text-emerald-900;
+    font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-feature-settings: "tnum" 1, "zero" 1;
+  }
+}
+
+/* Master Designer Glass & Card Utilities */
+.designer-glass-panel {
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.designer-card-elevated {
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.03);
+}
+
+/* Ken Burns Subtle Background Breathing Zoom */
+@keyframes ken-burns {
+  0% { transform: scale(1.02); }
+  50% { transform: scale(1.07); }
+  100% { transform: scale(1.02); }
+}
+.animate-ken-burns {
+  animation: ken-burns 35s ease-in-out infinite alternate;
+}
+
+/* Custom Smooth Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.6);
+}
+
+/* Animations */
+@keyframes scan-laser {
+  0% { top: 0%; opacity: 0.8; }
+  50% { top: 95%; opacity: 1; }
+  100% { top: 0%; opacity: 0.8; }
+}
+.animate-scan-laser {
+  animation: scan-laser 2.5s ease-in-out infinite;
 }
