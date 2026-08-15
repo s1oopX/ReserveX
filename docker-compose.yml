@@ -1,5 +1,5 @@
 # ReserveX 一键起全栈(08 §四)
-# 演示:docker compose up --build   →  http://localhost
+# 演示:docker compose up --build   →  http://localhost:8080
 # 重置(改了 DDL 必须):docker compose down -v && docker compose up --build
 #   ⚠️ docker-entrypoint-initdb.d 只在数据目录为空时执行一次,不 down -v 则改了 schema 也不重跑。
 # 注:不写 version: —— Compose v2+ 已废弃该字段,保留会输出 obsolete 警告。

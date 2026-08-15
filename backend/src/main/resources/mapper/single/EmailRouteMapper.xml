@@ -21,14 +21,23 @@
         VALUES (#{email}, #{userId}, #{createAt})
     </insert>
 
-    <!--
-      注册失败补偿。⚠️ 条件必须带 user_id:只删自己刚写的那行。
-      只按 email 删会在极端交错下删掉别人成功注册的行(03 §八·补)。
-    -->
+    <!-- 补偿删除,条件带 user_id(同 EmailRouteMapper 的理由) -->
     <delete id="deleteByEmailAndUser">
         DELETE FROM `email_route`
         WHERE `email`   = #{email}
           AND `user_id` = #{userId}
     </delete>
+
+    <!--
+      孤儿 route 清理扫描。create_at 早于 cutoff 的 route 可能对应从未成功写入的 user 行。
+      min-age 守卫由调用方算 cutoff 时减去,这里只做纯时间过滤。
+    -->
+    <select id="selectOrphansOlderThan" resultMap="BaseResultMap">
+        SELECT `email`, `user_id`, `create_at`
+        FROM `email_route`
+        WHERE `create_at` &lt; #{cutoff}
+        ORDER BY `create_at`
+        LIMIT #{limit}
+    </select>
 
 </mapper>

@@ -43,9 +43,11 @@ public class ReserveXProperties {
     private Qr qr = new Qr();
     private AdminBootstrap adminBootstrap = new AdminBootstrap();
     private RateLimit ratelimit = new RateLimit();
+    private Risk risk = new Risk();
     private Redis redis = new Redis();
     private Executor executor = new Executor();
     private Consumer consumer = new Consumer();
+    private Id id = new Id();
 
     /** 解析后的时区。全项目取 {@code ZoneId} 只走这一个方法。 */
     public ZoneId getZoneId() {
@@ -194,6 +196,21 @@ public class ReserveXProperties {
     }
 
     @Data
+    public static class Risk {
+        /**
+         * 抢号失败(售罄/配额已用)累计达到此阈值 → 给该用户置 captcha-required 标记,
+         * 下次抢号必须带验证码。正常用户不会连点 N 次售罄,触发了输一次码即可继续。
+         */
+        private int captchaThreshold = 5;
+        /** captcha-required 标记的存活秒数。 */
+        private int captchaRequiredTtlSec = 600;
+        /** 风控计数器(risk:user:{userId})的存活秒数(1min 滚动窗口)。 */
+        private int riskCounterTtlSec = 60;
+        /** 验证码本身的存活秒数。 */
+        private int captchaTtlSec = 300;
+    }
+
+    @Data
     public static class Redis {
         private Degrade degrade = new Degrade();
 
@@ -246,5 +263,16 @@ public class ReserveXProperties {
             private int min;
             private int max;
         }
+    }
+
+    @Data
+    public static class Id {
+        /**
+         * Snowflake 机器位。优先从环境变量 {@code WORKER_ID} 取;
+         * 未设则 Redis {@code INCR reservex:worker-id} mod 32;再失败 fallback 1(单实例 demo)。
+         * 多实例用同一 workerId 会生成**重复 ID**(主键冲突 / user_id 撞)。
+         */
+        private long workerId = 1L;
+        private long datacenterId = 1L;
     }
 }

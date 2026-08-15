@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS `state_log` (
 
 -- 不可变事件流水(业务审计)
 CREATE TABLE IF NOT EXISTS `reservation_event` (
-  `event_id`       BIGINT      NOT NULL,
+  `event_id`       VARCHAR(64) NOT NULL,
   `reservation_no` BIGINT      NOT NULL,
   `event_type`     VARCHAR(32) NOT NULL,                         -- CREATED/VERIFIED/CANCELLED/EXPIRED
   `from_status`    TINYINT     NULL,
@@ -136,16 +136,16 @@ CREATE TABLE IF NOT EXISTS `reconcile_log` (
   `id`              BIGINT      NOT NULL,
   `task_type`       VARCHAR(32) NOT NULL,                        -- stock/routeA/routeB/...
   `period`          VARCHAR(16) NOT NULL,                        -- 对账周期键(slot_date 或 slot_id+hour)
-  `slot_id`         BIGINT      NOT NULL,
-  `redis_occupied`  INT         NOT NULL,                        -- capacity - Σ Redis 桶余量
-  `db_occupied`     INT         NOT NULL,                        -- Σ slot_bucket.occupied
-  `reservation_cnt` INT         NOT NULL,                        -- 有效预约(RESERVED+VERIFIED)
-  `diff`            INT         NOT NULL,
+  `slot_id`         BIGINT      NOT NULL,                        -- 场次级任务填真实 slot_id;全局任务(孤儿route/expire/route/pending-idx)填 0(Snowflake 永不为 0)
+  `redis_occupied`  INT         NULL,                            -- capacity - Σ Redis 桶余量;非库存类任务无此量度,允许 NULL
+  `db_occupied`     INT         NULL,                            -- Σ slot_bucket.occupied;同上,允许 NULL
+  `reservation_cnt` INT         NULL,                            -- 有效预约(RESERVED+VERIFIED);全局任务无此量度,允许 NULL
+  `diff`            INT         NOT NULL,                        -- 该任务的差值/计数;恒有值(0 表示无差异)
   `fix_action`      VARCHAR(64) NULL,
   `create_at`       DATETIME    NOT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_task_period_slot` (`task_type`, `period`, `slot_id`)  -- 对账任务自身幂等,挡重跑翻倍
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='对账流水';
+  UNIQUE KEY `uk_task_period_slot` (`task_type`, `period`, `slot_id`)  -- 对账任务自身幂等,挡重跑翻倍。slot_id=0 让全局任务也吃这层去重
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='对账流水';
 
 -- qr_nonce 可 NULL:手工核销无 nonce;失败/重放的真实 nonce 记 attempt_nonce(非唯一),
 -- 否则重放的第二次连日志都撞 uk 记不下来

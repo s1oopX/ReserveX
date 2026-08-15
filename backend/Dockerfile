@@ -1,11 +1,11 @@
-# ============================================================================
-# ReserveX backend 镜像(08 §四 build: ./backend)
-#
-# ⚠️ 本机/Docker Hub 网络不稳时,maven:3.9 镜像拉取会 EOF。
-#    本 Dockerfile 的构建层只依赖宿主已打好的 jar —— `mvn package` 在宿主完成,
-#    镜像里不再跑 Maven。正常运行路径(能用 maven 镜像)切回多阶段构建,
-#    见 git 历史或 08 §四。两条路径产出等价的运行层。
-# ============================================================================
+# syntax=docker/dockerfile:1
+FROM maven:3.9.9-eclipse-temurin-21-alpine AS build
+WORKDIR /build
+
+COPY pom.xml ./
+COPY src ./src
+RUN --mount=type=cache,target=/root/.m2 mvn -B -DskipTests package
+
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
@@ -17,7 +17,7 @@ RUN apk add --no-cache tzdata curl \
 
 # 不用 root 跑应用
 RUN addgroup -S app && adduser -S -G app app
-COPY target/reservex-backend.jar app.jar
+COPY --from=build /build/target/reservex-backend.jar app.jar
 RUN chown -R app:app /app
 USER app
 

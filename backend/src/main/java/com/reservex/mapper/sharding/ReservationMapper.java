@@ -5,6 +5,7 @@ import com.reservex.entity.Reservation;
 import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 预约 Mapper(**分库**,与 {@code user} 绑定表,归 {@code shardingSqlSessionFactory})。
@@ -56,4 +57,25 @@ public interface ReservationMapper extends BaseMapper<Reservation> {
      */
     int expireBySlot(@Param("slotId") Long slotId,
                      @Param("now") LocalDateTime now);
+
+    /** 配额冲突时清理阶段 1 已插入但不能成立的预约。 */
+    int invalidateByNo(@Param("reservationNo") Long reservationNo,
+                       @Param("now") LocalDateTime now);
+
+    /**
+     * 提醒邮件候选:{@code status=0}(RESERVED)且 {@code valid_until} 落在 [from, to] 窗口内。
+     *
+     * <p>⚠️ 按 {@code valid_until} 范围查**必然广播两库**(valid_until 不是分片键)。
+     * 这是可接受的:提醒是定时任务,不在用户等待的路径上,且窗口通常只有 30min,
+     * 命中行数有限(今日预约 < 200)。
+     *
+     * <p>提醒发送幂等靠 Redis {@code SET reminder:sent:{slot_date} {rno}} 标记,
+     * **不查分库 event 表**:event 表在分库,跨库查更贵,且无简单唯一键。
+     *
+     * @param from 窗口起点(含)= now
+     * @param to   窗口终点(含)= now + ahead-min
+     * @return 候选预约(含 user_id 供取邮箱、reservation_no 供邮件正文)
+     */
+    List<Reservation> selectReminderCandidates(@Param("from") LocalDateTime from,
+                                                @Param("to") LocalDateTime to);
 }

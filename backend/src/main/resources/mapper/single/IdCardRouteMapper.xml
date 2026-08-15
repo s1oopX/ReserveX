@@ -15,14 +15,23 @@
 
     <!--
       落库时占配额位。与预约落库在同一个 singleTxManager 事务里。
-      ⚠️ 用 INSERT 而非 INSERT IGNORE:撞主键要抛异常,让消费者走 10.2a 回滚。
+      ⚠️ 用 INSERT 而非 INSERT IGNORE:撞主键要抛 DuplicateKeyException,
+         让消费者(ReservationPersistenceConsumer.persistSingle)catch 后比对 owner ——
+         不等抛 QuotaConflict 走 10.2a 回滚,相等当幂等跳过。
          用 IGNORE 会静默吞掉冲突 —— 配额穿了却无人知晓,
          而这正是这张表存在的唯一理由。
     -->
-    <insert id="insertQuota">
+    <insert id="tryInsertQuota">
         INSERT INTO `id_card_route` (`id_card_hash`, `slot_date`, `reservation_no`, `create_at`)
         VALUES (#{idCardHash}, #{slotDate}, #{reservationNo}, #{createAt})
     </insert>
+
+    <select id="selectReservationNo" resultType="long">
+        SELECT `reservation_no`
+        FROM `id_card_route`
+        WHERE `id_card_hash` = #{idCardHash}
+          AND `slot_date` = #{slotDate}
+    </select>
 
     <!--
       10.2a 回滚:释放配额位。
@@ -43,5 +52,12 @@
          并发下两个请求都能通过"查了没有"这一步,查询式判断在这里是纯粹的假保护。
          需要给用户看"今天约过了吗",走他自己的 reservation 列表,不走这张表。
     -->
+
+    <!-- route 对账(D8)用:取指定日全部配额位。单库表按 slot_date 查命中本表。 -->
+    <select id="selectBySlotDate" resultMap="BaseResultMap">
+        SELECT `id_card_hash`, `slot_date`, `reservation_no`, `create_at`
+        FROM `id_card_route`
+        WHERE `slot_date` = #{slotDate}
+    </select>
 
 </mapper>

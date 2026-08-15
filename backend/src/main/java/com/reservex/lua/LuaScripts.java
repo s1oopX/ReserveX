@@ -3,6 +3,7 @@ package com.reservex.lua;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RScript;
 import org.redisson.api.RedissonClient;
+import org.redisson.client.codec.StringCodec;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 
@@ -33,7 +34,7 @@ public class LuaScripts {
 
     /** 脚本清单。文件名与 04 §七 的对照表一一对应,改名等于改契约。 */
     public enum Script {
-        /** 10.1 抢号 + 判重 + 借桶。返回 1 成功 / 0 售罄 / -1 配额已用。 */
+        /** 10.1 抢号 + 判重 + 借桶 + 限流。返回 1 成功 / 0 售罄 / -1 配额已用 / -2 限流。 */
         GRAB("lua/grab.lua"),
         /** 10.2a 创建失败补偿回滚。返回 1 已回滚 / 0 已回滚过。 */
         COMPENSATE("lua/compensate.lua"),
@@ -58,7 +59,7 @@ public class LuaScripts {
 
     @PostConstruct
     public void loadAll() {
-        RScript script = redisson.getScript();
+        RScript script = redisson.getScript(StringCodec.INSTANCE);
         for (Script s : Script.values()) {
             String body = read(s.path);
             String sha = script.scriptLoad(body);
@@ -71,8 +72,10 @@ public class LuaScripts {
      * 执行脚本。
      *
      * <p>⚠️ <b>KEYS 与 ARGV 的顺序是脚本契约的一部分</b>,不是实现细节:
-     * {@code grab.lua} 的 {@code KEYS[1]} 是命中桶、{@code KEYS[2..]} 必须是
-     * <b>环形</b>借桶顺序({@code (bucket_no + i) % bucket_count})。
+     * {@code grab.lua} 的 {@code KEYS[1]} 是命中桶、{@code KEYS[2..n]} 必须是
+     * <b>环形</b>借桶顺序({@code (bucket_no + i) % bucket_count}),末尾两位
+     * {@code KEYS[n+1]=ratelimit:user:{userId}}、{@code KEYS[n+2]=ratelimit:slot:{slotId}}
+     * 是 D5 限流折叠进来的(保持 2 round-trip)。ARGV[15]/ARGV[16] 是 user/slot rps。
      * 顺序传错不会报错,只会让借桶偏向固定几个桶 → 倾斜,而压测埋点
      * {@code stats:borrow:*} 是唯一能看出来的地方。
      *
@@ -83,7 +86,7 @@ public class LuaScripts {
         if (sha == null) {
             throw new IllegalStateException("Lua 脚本未加载:" + script + ",检查启动日志");
         }
-        return redisson.getScript().evalSha(
+        return redisson.getScript(StringCodec.INSTANCE).evalSha(
                 RScript.Mode.READ_WRITE, sha, RScript.ReturnType.INTEGER, keys, argv);
     }
 

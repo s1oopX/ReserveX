@@ -5,6 +5,7 @@ import com.reservex.entity.PhoneRoute;
 import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 手机号路由 Mapper(**单库**)。v1 只用于注册占位去重,不做路由读。
@@ -21,4 +22,8 @@ public interface PhoneRouteMapper extends BaseMapper<PhoneRoute> {
 
     /** 补偿删除。条件带 {@code user_id},只删自己写的那行。 */
     int deleteByPhoneAndUser(@Param("phone") String phone, @Param("userId") Long userId);
+
+    /** 孤儿 route 清理扫描,同 {@link EmailRouteMapper#selectOrphansOlderThan}。 */
+    List<PhoneRoute> selectOrphansOlderThan(@Param("cutoff") LocalDateTime cutoff,
+                                            @Param("limit") int limit);
 }

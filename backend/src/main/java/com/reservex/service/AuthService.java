@@ -3,6 +3,7 @@ package com.reservex.service;
 import cn.dev33.satoken.stp.SaLoginModel;
 import cn.dev33.satoken.stp.StpLogic;
 import cn.hutool.crypto.digest.BCrypt;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.reservex.common.BizException;
 import com.reservex.common.ErrorCode;
 import com.reservex.common.TimeSupport;
@@ -26,6 +27,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
@@ -78,6 +80,14 @@ public class AuthService {
     }
 
     public void register(String rawEmail, String rawPhone, String password, String rawIdCard) {
+        register(rawEmail, rawPhone, password, rawIdCard, "USER");
+    }
+
+    /**
+     * 注册跨库两写。{@code role} 由调用方传入(注册端点恒传 USER,管理端建 STAFF 传 STAFF),
+     * **不暴露给 HTTP 请求体** —— role 能被 HTTP 注入即提权漏洞(User 红线:ADMIN 只能 seed/bootstrap 产生)。
+     */
+    public void register(String rawEmail, String rawPhone, String password, String rawIdCard, String role) {
         String email = normalizeEmail(rawEmail);
         String phone = rawPhone.trim();
         String idCard = rawIdCard.trim().toUpperCase(Locale.ROOT);
@@ -113,7 +123,7 @@ public class AuthService {
         user.setIdCardKeyId(encrypted.keyId());
         user.setIdCardHash(idCardHash);
         user.setIdCardMasked(idCardCipher.mask(idCard));
-        user.setRole("USER");
+        user.setRole(role);
         user.setStatus(0);
         user.setCreateAt(now);
         user.setUpdateAt(now);
@@ -279,6 +289,8 @@ public class AuthService {
     private String issueAccess(User user) {
         SaLoginModel model = new SaLoginModel()
                 .setExtra("role", user.getRole())
+                .setExtra("idCardHash", user.getIdCardHash())
+                .setExtra("idCardMasked", user.getIdCardMasked())
                 .setIsWriteHeader(false);
         return stpLogic.createLoginSession(user.getUserId(), model);
     }
@@ -402,6 +414,29 @@ public class AuthService {
     private record RefreshRef(long userId, String jti) {
     }
 
+    /**
+     * 列出 STAFF 账号(广播两库归并)。role=ADMIN 只能 seed/bootstrap 产生,
+     * 此处只查 STAFF,管理端不得列出超管凭据。
+     */
+    public List<StaffView> listStaff() {
+        return userMapper.selectList(new LambdaQueryWrapper<User>()
+                        .eq(User::getRole, "STAFF")
+                        .orderByDesc(User::getCreateAt))
+                .stream()
+                .map(u -> new StaffView(u.getUserId(), u.getEmail(), u.getPhone(),
+                        u.getIdCardMasked(), u.getStatus(), u.getCreateAt()))
+                .toList();
+    }
+
+    /**
+     * 管理员创建 STAFF 账号。复用注册跨库两写逻辑,role 硬编码 STAFF(不暴露给 HTTP)。
+     */
+    public long createStaff(String email, String phone, String password, String idCard, long operatorId) {
+        register(email, phone, password, idCard, "STAFF");
+        log.info("管理员 {} 创建 STAFF 账号 email={}", operatorId, email);
+        return 0;
+    }
+
     public record TokenPair(String accessToken, String refreshToken, Long userId, String role) {
     }
 
@@ -413,5 +448,9 @@ public class AuthService {
         public static LoginOutcome passwordChangeRequired(String onceToken) {
             return new LoginOutcome(null, onceToken);
         }
+    }
+
+    public record StaffView(Long userId, String email, String phone,
+                            String idCardMasked, Integer status, LocalDateTime createAt) {
     }
 }

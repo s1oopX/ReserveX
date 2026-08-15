@@ -22,4 +22,13 @@
           AND `user_id` = #{userId}
     </delete>
 
+    <!-- 孤儿 route 清理扫描,同 EmailRouteMapper.selectOrphansOlderThan -->
+    <select id="selectOrphansOlderThan" resultMap="BaseResultMap">
+        SELECT `phone`, `user_id`, `create_at`
+        FROM `phone_route`
+        WHERE `create_at` &lt; #{cutoff}
+        ORDER BY `create_at`
+        LIMIT #{limit}
+    </select>
+
 </mapper>

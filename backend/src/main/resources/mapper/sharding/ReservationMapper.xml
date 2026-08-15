@@ -69,4 +69,29 @@
           AND `valid_until` &lt; #{now}
     </update>
 
+    <update id="invalidateByNo">
+        UPDATE `reservation`
+        SET `status`    = 2,
+            `version`   = `version` + 1,
+            `update_at` = #{now}
+        WHERE `reservation_no` = #{reservationNo}
+          AND `status`         = 0
+    </update>
+
+    <!--
+      提醒候选:status=0 且 valid_until 落在 [from, to] 窗口内。
+      ⚠️ 按 valid_until 查必然广播两库(valid_until 不是分片键);提醒是低频定时任务可接受。
+      返回 user_id 供取邮箱、reservation_no 供邮件正文。
+    -->
+    <select id="selectReminderCandidates" resultMap="BaseResultMap">
+        SELECT `reservation_no`, `user_id`, `slot_id`, `slot_date`, `bucket_no`,
+               `id_card_hash`, `id_card_masked`, `status`, `valid_until`,
+               `verified_at`, `create_at`, `update_at`, `version`
+        FROM `reservation`
+        WHERE `status`      = 0
+          AND `valid_until` &gt;= #{from}
+          AND `valid_until` &lt;= #{to}
+        ORDER BY `valid_until` ASC
+    </select>
+
 </mapper>

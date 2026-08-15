@@ -1,6 +1,5 @@
 package com.reservex.entity;
 
-import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -30,8 +29,8 @@ import java.time.LocalDateTime;
 @TableName("reservation_event")
 public class ReservationEvent {
 
-    @TableId(type = IdType.INPUT)
-    private Long eventId;
+    @TableId
+    private String eventId;
 
     private Long reservationNo;
 

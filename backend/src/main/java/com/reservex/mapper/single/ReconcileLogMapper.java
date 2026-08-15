@@ -25,4 +25,7 @@ public interface ReconcileLogMapper extends BaseMapper<ReconcileLog> {
     /** 对账中心看板:查有差异的记录。 */
     List<ReconcileLog> selectWithDiff(@Param("taskType") String taskType,
                                       @Param("limit") Integer limit);
+
+    /** 对账中心健康视图：即使 diff=0 也展示最近运行证据。 */
+    List<ReconcileLog> selectLatest(@Param("limit") Integer limit);
 }

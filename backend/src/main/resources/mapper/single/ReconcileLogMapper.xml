@@ -56,4 +56,11 @@
         LIMIT #{limit}
     </select>
 
+    <select id="selectLatest" resultMap="BaseResultMap">
+        SELECT <include refid="Cols"/>
+        FROM `reconcile_log`
+        ORDER BY `create_at` DESC
+        LIMIT #{limit}
+    </select>
+
 </mapper>

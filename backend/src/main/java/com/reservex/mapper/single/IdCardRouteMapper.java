@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 一人一证一天一约 Mapper(**单库**)。配额的**第二道防线**。
@@ -23,10 +24,14 @@ public interface IdCardRouteMapper extends BaseMapper<IdCardRoute> {
      * 让消费者走 10.2a 回滚。用 IGNORE 会静默吞掉冲突 ——
      * 结果是配额穿了却无人知晓,而这正是这张表存在的唯一理由。
      */
-    int insertQuota(@Param("idCardHash") String idCardHash,
-                    @Param("slotDate") LocalDate slotDate,
-                    @Param("reservationNo") Long reservationNo,
-                    @Param("createAt") LocalDateTime createAt);
+    int tryInsertQuota(@Param("idCardHash") String idCardHash,
+                       @Param("slotDate") LocalDate slotDate,
+                       @Param("reservationNo") Long reservationNo,
+                       @Param("createAt") LocalDateTime createAt);
+
+    /** 插入返回 0 后只用于区分“同一预约重投”与“另一预约抢占”。 */
+    Long selectReservationNo(@Param("idCardHash") String idCardHash,
+                             @Param("slotDate") LocalDate slotDate);
 
     /**
      * 10.2a 回滚:释放配额位。
@@ -38,6 +43,11 @@ public interface IdCardRouteMapper extends BaseMapper<IdCardRoute> {
     int releaseQuota(@Param("idCardHash") String idCardHash,
                      @Param("slotDate") LocalDate slotDate,
                      @Param("reservationNo") Long reservationNo);
+
+    /**
+     * route 对账(D8)用:取指定日的全部配额位。单库表,按 slot_date 查命中本表不分片。
+     */
+    List<IdCardRoute> selectBySlotDate(@Param("slotDate") LocalDate slotDate);
 
     // ⚠️ 刻意**不提供** selectByHashAndDate 之类"先查有没有再决定要不要占"的方法。
     //    配额唯一性只能由 insertQuota 的主键冲突判定:并发下两个请求都能通过

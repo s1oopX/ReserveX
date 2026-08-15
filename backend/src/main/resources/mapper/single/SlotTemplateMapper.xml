@@ -42,6 +42,7 @@
             `capacity`           = #{capacity},
             `bucket_count`       = #{bucketCount},
             `release_offset_min` = #{releaseOffsetMin},
+            `enabled`            = #{enabled},
             `update_at`          = #{updateAt},
             `version`            = `version` + 1
         WHERE `template_id` = #{templateId}

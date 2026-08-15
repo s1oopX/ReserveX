@@ -32,6 +32,7 @@ public class ConfigGuard {
         assertRedisDatabase();
         assertConnectionBudget();
         assertConsumerSemantics();
+        assertSnowflakeIdRange();
         log.info("配置红线断言通过");
     }
 
@@ -118,6 +119,22 @@ public class ConfigGuard {
             throw new IllegalStateException(
                     "reservex.consumer.consume-message-batch-max-size=" + batch + ",只允许 1。"
                             + "D6 五阶段是单条语义,批量下一条失败会整批重投,已成功的条目被重复执行(08 §7.4)");
+        }
+    }
+
+    /**
+     * Snowflake workerId / datacenterId 各 5 位,有效范围 0~31。
+     * 越界会让 Hutool Snowflake 构造抛异常,但兜底值配错时(IdGenerator 回退到 props)
+     * 需要更早、更明确的报错。
+     */
+    private void assertSnowflakeIdRange() {
+        long worker = props.getId().getWorkerId();
+        long dc = props.getId().getDatacenterId();
+        if (worker < 0 || worker > 31 || dc < 0 || dc > 31) {
+            throw new IllegalStateException(
+                    "reservex.id.worker-id=" + worker + ", datacenter-id=" + dc
+                            + "。Snowflake 机器/数据中心位各 5 位,允许 0~31;"
+                            + "多实例需设环境变量 WORKER_ID 或保证 Redis 可用(08 §九)");
         }
     }
 }

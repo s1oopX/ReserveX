@@ -5,6 +5,7 @@ import com.reservex.entity.EmailRoute;
 import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 邮箱路由 Mapper(**单库**,归 {@code singleSqlSessionFactory})。
@@ -33,4 +34,13 @@ public interface EmailRouteMapper extends BaseMapper<EmailRoute> {
      * 只按 email 删会在极端交错下删掉别人成功注册的行(03 §八·补)。
      */
     int deleteByEmailAndUser(@Param("email") String email, @Param("userId") Long userId);
+
+    /**
+     * 孤儿 route 清理扫描:取 create_at 早于 cutoff 的行。
+     *
+     * <p>这些 route 对应的 {@code user} 行可能从未成功写入(跨库两写第二步失败且补偿删也失败),
+     * 留下永久孤儿 —— 占住 email/phone 不让任何人注册。{@code min-age} 守卫挡住仍在途的注册。
+     */
+    List<EmailRoute> selectOrphansOlderThan(@Param("cutoff") LocalDateTime cutoff,
+                                            @Param("limit") int limit);
 }
