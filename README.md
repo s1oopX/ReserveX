@@ -17,7 +17,7 @@ openssl rand -base64 48   # JWT_SECRET
 docker compose up --build
 ```
 
-访问 <http://localhost>。超管账号 `admin@reservex.local`,初始密码取 `.env` 的
+访问 <http://localhost:8080>。超管账号 `admin@reservex.local`,初始密码取 `.env` 的
 `ADMIN_INIT_PASSWORD`,**首次登录强制改密**。
 
 > 邮箱是写死的(`02-seed.sql` 与 `application.yml` 各一处),不是环境变量 ——
@@ -70,11 +70,28 @@ cd frontend && npm install && npm run dev
 
 后端环境变量走 shell 或 IDE 配置,不要在 `application.yml` 里写死任何密钥。
 
-## 骨架当前状态
+## 当前状态
 
-结构、配置、DDL、实体与映射层、Lua 脚本、启动断言、加解密与序列化契约已就位。
-**业务实现(service / controller / mq / scanner / reconcile)按 `09 §七·补` 的
-MVP 顺序 0–10 阶段逐段填充**,每阶段有可验证产出。
+核心抢号链路完整:注册登录、场次生成与放号、Redis 抢号(限流折叠进 Lua)、
+MQ 异步落库、我的预约与取消、动态 QR / 手工核销、库存对账、管理端只读监控。
+
+**P0+P1+P2 缺陷修复与补全(2026-08)** 已落地并验证(后端 21 测试全过、前端类型检查通过):
+
+- **P0 正确性**:`IdCardRoute` 改 `INSERT` 抛 `DuplicateKeyException` 触发配额冲突回滚;
+  新增 `OrphanRouteCleaner` 定时清理注册跨库两写失败留的孤儿 route(按分片键查、10min 守卫)。
+- **P1 契约缺口**:补 7 个后端端点打通前端占位页 —— 增容、对账处置、放号监控、
+  staff today、admin staff、DLQ 诚实化、全园预约查询 + 今日核销统计。
+- **D9 workerId 动态化**:env `WORKER_ID` → Redis `INCR` mod 32 → fallback 1,多实例不撞 ID。
+- **D7 批量过期扫描**:`ExpiryScanner` 广播两库 `RESERVED→EXPIRED`(now 用 `TimeSupport` 不用 SQL `NOW()`)。
+- **D6 邮件提醒**:`ReminderWorker` 在 `valid_until` 前 30min 窗口发邮件,Redis `SET NX` 幂等,
+  SMTP 密码是 placeholder 时 `catch MailAuthenticationException` 降级 `log.warn`。
+- **D8 多类对账**:`reconcile-a`(Redis→DB)/ `reconcile-b`(反向)/ `route`(`id_card_route` vs reservation)/
+  `pending-idx`(pending ZSet vs occupy 脏索引安全删)。
+- **D5 Redis 限流**:user/slot 限流折叠进 `grab.lua` 保持 2 round-trip,超限返回 `-2` → `RATE_LIMITED`。
+- **D4 验证码风控**:`CaptchaService` 生成/一次性校验/风控计数,抢号失败累计达阈值置 `captcha-required`,
+  被风控用户须带 `captchaToken`({uuid}:{input});正常用户零额外 round-trip。
+
+完整验收边界见 [`docs/07-页面与闭环.md`](docs/07-页面与闭环.md)。
 
 `package-lock.json` 需在首次 `npm install` 后提交 —— 缺它则每次镜像构建
 按 `^` 范围重新解析版本,同一个 commit 在不同日期构建出不同前端。
