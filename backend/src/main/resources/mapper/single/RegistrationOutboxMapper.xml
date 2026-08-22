@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.reservex.mapper.single.RegistrationOutboxMapper">
+    <resultMap id="BaseResultMap" type="com.reservex.entity.RegistrationOutbox">
+        <id property="userId" column="user_id"/>
+        <result property="registrationKey" column="registration_key"/>
+        <result property="requestFingerprint" column="request_fingerprint"/>
+        <result property="email" column="email"/>
+        <result property="phone" column="phone"/>
+        <result property="password" column="password"/>
+        <result property="idCardCiphertext" column="id_card_ciphertext"/>
+        <result property="idCardKeyId" column="id_card_key_id"/>
+        <result property="idCardHash" column="id_card_hash"/>
+        <result property="idCardMasked" column="id_card_masked"/>
+        <result property="role" column="role"/>
+        <result property="userStatus" column="user_status"/>
+        <result property="userVersion" column="user_version"/>
+        <result property="userMustChangePassword" column="user_must_change_password"/>
+        <result property="status" column="status"/>
+        <result property="attempts" column="attempts"/>
+        <result property="nextAttemptAt" column="next_attempt_at"/>
+        <result property="leaseUntil" column="lease_until"/>
+        <result property="leaseOwner" column="lease_owner"/>
+        <result property="lastError" column="last_error"/>
+        <result property="operatorId" column="operator_id"/>
+        <result property="auditId" column="audit_id"/>
+        <result property="createAt" column="create_at"/>
+        <result property="updateAt" column="update_at"/>
+    </resultMap>
+
+    <update id="claim">
+        UPDATE `registration_outbox`
+        SET `status` = 1, `attempts` = `attempts` + 1,
+            `lease_until` = #{leaseUntil}, `lease_owner` = #{leaseOwner},
+            `update_at` = #{now}
+        WHERE `user_id` = #{userId}
+          AND ((`status` = 0 AND `next_attempt_at` &lt;= #{now})
+               OR (`status` = 1 AND `lease_until` &lt; #{staleBefore}))
+    </update>
+
+    <select id="selectDueUserIds" resultType="long">
+        SELECT `user_id` FROM `registration_outbox`
+        WHERE (`status` = 0 AND `next_attempt_at` &lt;= #{now})
+           OR (`status` = 1 AND `lease_until` &lt; #{now})
+        ORDER BY `update_at`, `user_id`
+        LIMIT #{limit}
+    </select>
+
+    <update id="complete">
+        UPDATE `registration_outbox`
+        SET `status` = 3,
+            `email` = NULL, `phone` = NULL, `password` = NULL,
+            `id_card_ciphertext` = NULL, `id_card_key_id` = NULL,
+            `id_card_hash` = NULL, `id_card_masked` = NULL,
+            `role` = NULL, `user_status` = NULL, `user_version` = NULL,
+            `user_must_change_password` = NULL,
+            `next_attempt_at` = NULL, `lease_until` = NULL, `lease_owner` = NULL,
+            `last_error` = NULL, `operator_id` = NULL, `audit_id` = NULL,
+            `update_at` = #{now}
+        WHERE `user_id` = #{userId} AND `status` = 1
+          AND `lease_owner` = #{leaseOwner} AND `registration_key` IS NOT NULL
+    </update>
+
+    <delete id="deleteCompletedWithoutKey">
+        DELETE FROM `registration_outbox`
+        WHERE `user_id` = #{userId} AND `status` = 1
+          AND `lease_owner` = #{leaseOwner} AND `registration_key` IS NULL
+    </delete>
+
+    <update id="retry">
+        UPDATE `registration_outbox`
+        SET `status` = 0, `next_attempt_at` = #{nextAttemptAt},
+            `lease_until` = NULL, `lease_owner` = NULL,
+            `last_error` = #{lastError}, `update_at` = #{now}
+        WHERE `user_id` = #{userId} AND `status` = 1
+          AND `lease_owner` = #{leaseOwner}
+    </update>
+
+    <update id="markStuck">
+        UPDATE `registration_outbox`
+        SET `status` = 2, `lease_until` = NULL, `lease_owner` = NULL,
+            `last_error` = #{lastError}, `update_at` = #{now}
+        WHERE `user_id` = #{userId} AND `status` = 1
+          AND `lease_owner` = #{leaseOwner}
+    </update>
+
+    <update id="retryStuck">
+        UPDATE `registration_outbox`
+        SET `status` = 0, `attempts` = 0, `next_attempt_at` = #{now},
+            `lease_until` = NULL, `lease_owner` = NULL,
+            `last_error` = NULL, `update_at` = #{now}
+        WHERE `user_id` = #{userId} AND `status` = 2
+    </update>
+
+    <select id="existsUnfinished" resultType="int">
+        SELECT COUNT(*) FROM `registration_outbox`
+        WHERE `user_id` = #{userId} AND `status` IN (0, 1)
+    </select>
+
+    <select id="selectByRegistrationKey" resultMap="BaseResultMap">
+        SELECT * FROM `registration_outbox`
+        WHERE `registration_key` = #{registrationKey}
+        LIMIT 1
+    </select>
+</mapper>

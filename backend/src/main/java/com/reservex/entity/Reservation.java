@@ -26,8 +26,8 @@ import java.time.LocalDateTime;
  *
  * <p><b>CAS 的不对称是刻意的</b>(01 §3.2 / 04 §五):取消与过期**不带 version**,
  * 只靠 {@code status=0} + {@code valid_until} 守卫 —— 窗口期取消时 DB 里还没记录,
- * 读不到 version,带 version 的写法在那条路径根本无法构造;批量过期是多行更新,
- * 也无法逐行带 version。**只有核销带 {@code version=?}**,因为 STAFF 是先看到详情页
+ * 读不到 version,带 version 的写法在那条路径根本无法构造。**只有核销带
+ * {@code version=?}**,因为 STAFF 是先看到详情页
  * (已读到 version)再点核销,带上它能挡"页面数据已过期"的误操作。
  */
 @Data

@@ -36,11 +36,13 @@ public interface EmailRouteMapper extends BaseMapper<EmailRoute> {
     int deleteByEmailAndUser(@Param("email") String email, @Param("userId") Long userId);
 
     /**
-     * 孤儿 route 清理扫描:取 create_at 早于 cutoff 的行。
+     * 孤儿 route 检测扫描:取 create_at 早于 cutoff 的行。
      *
      * <p>这些 route 对应的 {@code user} 行可能从未成功写入(跨库两写第二步失败且补偿删也失败),
-     * 留下永久孤儿 —— 占住 email/phone 不让任何人注册。{@code min-age} 守卫挡住仍在途的注册。
+     * 留下永久孤儿 —— 占住 email/phone 不让任何人注册。扫描结果只告警,不能仅凭年龄自动删除。
      */
     List<EmailRoute> selectOrphansOlderThan(@Param("cutoff") LocalDateTime cutoff,
+                                            @Param("afterCreateAt") LocalDateTime afterCreateAt,
+                                            @Param("afterEmail") String afterEmail,
                                             @Param("limit") int limit);
 }

@@ -56,29 +56,29 @@ class CaptchaServiceTest {
     @Test
     void verifyDeletesKeyOnSuccess() {
         String key = "abc";
-        when(valueOps.get("captcha:" + key)).thenReturn("ABCD");
+        when(valueOps.getAndDelete("captcha:" + key)).thenReturn("ABCD");
         // 忽略大小写 + trim
         assertThat(service.verify(key, " abcd ")).isTrue();
         // 校验后必删,一次性语义
-        verify(redis).delete("captcha:" + key);
+        verify(valueOps).getAndDelete("captcha:" + key);
     }
 
     @Test
     void verifyDeletesKeyOnFailureToo() {
         String key = "abc";
-        when(valueOps.get("captcha:" + key)).thenReturn("ABCD");
+        when(valueOps.getAndDelete("captcha:" + key)).thenReturn("ABCD");
         // 输入错误也删 —— 防爆破枚举:攻击者不能反复试同一码
         assertThat(service.verify(key, "WRONG")).isFalse();
-        verify(redis).delete("captcha:" + key);
+        verify(valueOps).getAndDelete("captcha:" + key);
     }
 
     @Test
     void verifyDeletesKeyEvenIfMissing() {
         String key = "abc";
-        when(valueOps.get("captcha:" + key)).thenReturn(null);
+        when(valueOps.getAndDelete("captcha:" + key)).thenReturn(null);
         // key 不存在(已过期或已用过)也走删,且返 false
         assertThat(service.verify(key, "ABCD")).isFalse();
-        verify(redis).delete("captcha:" + key);
+        verify(valueOps).getAndDelete("captcha:" + key);
     }
 
     @Test
@@ -88,7 +88,7 @@ class CaptchaServiceTest {
         assertThat(service.verify("abc", null)).isFalse();
         assertThat(service.verify("abc", "  ")).isFalse();
         // 空 key 不应触发删除(没有 key 可删)
-        verify(redis, never()).delete(any(String.class));
+        verify(valueOps, never()).getAndDelete(any(String.class));
     }
 
     // ---- 风控阈值 ----

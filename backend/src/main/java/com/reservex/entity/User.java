@@ -61,8 +61,14 @@ public class User {
     /** {@code USER} / {@code STAFF} / {@code ADMIN}。 */
     private String role;
 
-    /** 0 正常,1 封禁。封禁只在抢号/核销两个写端点查 {@code ban:{userId}} 生效(00 §6.4 认下)。 */
+    /** 0 正常,1 封禁。角色校验、登录与 refresh 每次都回查此状态。 */
     private Integer status;
+
+    /** STAFF 状态资源版本；每次条件更新单调递增。 */
+    private Integer version;
+
+    /** 1 表示只能领取一次性改密凭证,成功改密后原子清零。 */
+    private Integer mustChangePassword;
 
     private LocalDateTime createAt;
 

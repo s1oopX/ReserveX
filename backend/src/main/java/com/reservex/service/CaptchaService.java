@@ -4,13 +4,18 @@ import cn.hutool.captcha.CaptchaUtil;
 import cn.hutool.captcha.LineCaptcha;
 import cn.hutool.core.img.ImgUtil;
 import cn.hutool.core.util.IdUtil;
+import cn.hutool.crypto.digest.DigestUtil;
+import com.reservex.common.BizException;
+import com.reservex.common.ErrorCode;
 import com.reservex.config.ReserveXProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.Base64;
+import java.util.List;
 
 /**
  * 图形验证码生成/校验 + 风控触发(D4)。
@@ -35,6 +40,12 @@ public class CaptchaService {
     private static final String CAPTCHA_KEY_PREFIX = "captcha:";
     private static final String CAPTCHA_REQUIRED_PREFIX = "captcha-required:user:";
     private static final String RISK_COUNTER_PREFIX = "risk:user:";
+    private static final String CAPTCHA_RATE_PREFIX = "ratelimit:captcha:";
+    private static final DefaultRedisScript<Long> CHECK_IP_RATE = new DefaultRedisScript<>("""
+            local count = redis.call('INCR', KEYS[1])
+            if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+            return count <= tonumber(ARGV[2]) and 1 or 0
+            """, Long.class);
 
     private final StringRedisTemplate redis;
     private final ReserveXProperties props;
@@ -47,7 +58,9 @@ public class CaptchaService {
     /**
      * 生成验证码。Redis {@code SET captcha:{uuid} {code} EX 300} → 返回 base64 图片 + key。
      */
-    public CaptchaView generate() {
+    public CaptchaView generate(String clientIp) {
+        requireIpRate("generate", clientIp,
+                props.getRatelimit().getCaptchaGenerateIpMaxAttempts());
         LineCaptcha captcha = CaptchaUtil.createLineCaptcha(120, 40, 4, 30);
         String code = captcha.getCode();
         String key = IdUtil.fastSimpleUUID();
@@ -59,19 +72,37 @@ public class CaptchaService {
     }
 
     /**
-     * 校验验证码。校验通过立即删 key(一次性)。校验失败也删,防爆破枚举。
+     * 校验验证码。原子取并删 key(一次性),并发请求只有一个能读到答案。
      */
     public boolean verify(String key, String input) {
-        if (key == null || key.isBlank() || input == null || input.isBlank()) {
+        if (key == null || key.isBlank() || key.length() > 64
+                || input == null || input.isBlank() || input.length() > 64) {
             return false;
         }
-        String stored = redis.opsForValue().get(captchaKey(key));
-        // 校验后无论对错都删,一次性语义
-        redis.delete(captchaKey(key));
+        String stored = redis.opsForValue().getAndDelete(captchaKey(key));
         if (stored == null) {
             return false;
         }
         return stored.equalsIgnoreCase(input.trim());
+    }
+
+    public boolean verifyPublic(String key, String input, String clientIp) {
+        requireIpRate("verify", clientIp,
+                props.getRatelimit().getCaptchaVerifyIpMaxAttempts());
+        return verify(key, input);
+    }
+
+    private void requireIpRate(String action, String clientIp, int limit) {
+        Long allowed = redis.execute(CHECK_IP_RATE,
+                List.of(CAPTCHA_RATE_PREFIX + action + ":ip:" + DigestUtil.sha256Hex(clientIp)),
+                Integer.toString(props.getRatelimit().getCaptchaIpWindowSec()),
+                Integer.toString(limit));
+        if (allowed == null) {
+            throw BizException.of(ErrorCode.SERVICE_DEGRADED);
+        }
+        if (allowed != 1) {
+            throw BizException.of(ErrorCode.RATE_LIMITED);
+        }
     }
 
     /** 该用户当前是否被风控要求验证码。 */

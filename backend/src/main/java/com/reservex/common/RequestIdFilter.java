@@ -28,12 +28,15 @@ public class RequestIdFilter extends OncePerRequestFilter {
 
     public static final String MDC_KEY = "requestId";
     public static final String HEADER = "X-Request-Id";
+    private static final int MAX_LENGTH = 64;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
         String requestId = request.getHeader(HEADER);
-        if (requestId == null || requestId.isBlank()) {
+        if (requestId == null || requestId.isBlank()
+                || requestId.length() > MAX_LENGTH
+                || !requestId.matches("[A-Za-z0-9._-]+")) {
             requestId = UUID.randomUUID().toString().replace("-", "");
         }
         MDC.put(MDC_KEY, requestId);

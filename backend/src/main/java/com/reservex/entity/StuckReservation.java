@@ -27,7 +27,8 @@ import java.time.LocalDateTime;
  * (比如 {@code bucket_count} 中途被改过),就会回补到**错的桶**上 —— 一个桶多、
  * 一个桶少,Σ 对得上而单桶对不上,是最难查的一类不一致。
  *
- * <p>⚠️ {@code status=0} 待研判是**默认值**,人工介入后才变。{@code idx_status}
+ * <p>⚠️ {@code status=0} 待研判是**默认值**,人工介入后先 CAS 到 {@code status=4}
+ * 回滚处理中,成功后变为 2,失败可重试。{@code idx_status}
  * 就是给"还有多少待研判"这个看板查询用的(07 对账中心第三个 Tab)。
  */
 @Data
@@ -58,7 +59,7 @@ public class StuckReservation {
     /** 最后一次失败原因,截断到 512 字符。人工研判的起点。 */
     private String lastError;
 
-    /** 0 待研判,1 已重投成功,2 已回滚,3 已忽略。 */
+    /** 0 待研判,2 已回滚,3 历史已忽略(不再允许新增),4 回滚处理中。 */
     private Integer status;
 
     private LocalDateTime createAt;

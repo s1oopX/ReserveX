@@ -22,10 +22,8 @@
     </resultMap>
 
     <!--
-      取消:RESERVED → CANCELLED。
-      ⚠️ 刻意不带 version(01 §3.2 / 04 §五):窗口期取消时 DB 里还没有这行,
-         读不到 version,带 version 的写法在那条路径根本无法构造。
-         status=0 已是充分守卫(状态机只有 0 有出边)。
+      取消:RESERVED → CANCELLED。version 来自 HTTP If-Match；窗口期取消使用
+      occupy 表示的初始 version=0，消费者落库的新行同样从 0 开始。
       ⚠️ valid_until >= #{now} 防"场次已结束还能取消"。
     -->
     <update id="cancelByNo">
@@ -33,8 +31,10 @@
         SET `status`    = 2,
             `version`   = `version` + 1,
             `update_at` = #{now}
-        WHERE `reservation_no` = #{reservationNo}
+        WHERE `user_id`        = #{userId}
+          AND `reservation_no` = #{reservationNo}
           AND `status`         = 0
+          AND `version`        = #{version}
           AND `valid_until`   &gt;= #{now}
     </update>
 
@@ -49,22 +49,31 @@
             `verified_at` = #{verifiedAt},
             `version`     = `version` + 1,
             `update_at`   = #{verifiedAt}
-        WHERE `reservation_no` = #{reservationNo}
+        WHERE `user_id`        = #{userId}
+          AND `reservation_no` = #{reservationNo}
           AND `status`         = 0
           AND `version`        = #{version}
+          AND `valid_until`   &gt;= #{verifiedAt}
     </update>
 
-    <!--
-      批量过期:RESERVED → EXPIRED。定时任务调用,多行更新故无法逐行带 version。
-      ⚠️ now 由应用层按 reservex.zone 传入,不用 SQL NOW() ——
-         MySQL 容器时区漏配成 UTC 时 NOW() 早 8h,会把当天还有效的预约全刷成 EXPIRED。
-    -->
-    <update id="expireBySlot">
+    <select id="selectExpiryCandidates" resultMap="BaseResultMap">
+        SELECT `reservation_no`, `user_id`, `slot_id`, `slot_date`, `bucket_no`,
+               `id_card_hash`, `id_card_masked`, `status`, `valid_until`,
+               `verified_at`, `create_at`, `update_at`, `version`
+        FROM `reservation`
+        WHERE `status` = 0
+          AND `valid_until` &lt; #{now}
+        ORDER BY `valid_until`, `reservation_no`
+        LIMIT #{limit}
+    </select>
+
+    <update id="expireByNo">
         UPDATE `reservation`
         SET `status`    = 3,
             `version`   = `version` + 1,
             `update_at` = #{now}
-        WHERE `slot_id`     = #{slotId}
+        WHERE `user_id`     = #{userId}
+          AND `reservation_no` = #{reservationNo}
           AND `status`      = 0
           AND `valid_until` &lt; #{now}
     </update>

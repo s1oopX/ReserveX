@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
 
 /**
  * 四把密钥的启动断言(08 §4.2)。
@@ -44,6 +45,13 @@ public class SecretGuard {
 
     @PostConstruct
     public void assertSecrets() {
+        String adminPassword = props.getAdminBootstrap().getInitPassword();
+        if (props.getAdminBootstrap().isEnabled()
+                && (adminPassword == null || adminPassword.length() < 8
+                || adminPassword.getBytes(StandardCharsets.UTF_8).length > 72)) {
+            throw new IllegalStateException(
+                    "ADMIN_INIT_PASSWORD 必须至少 8 位且 UTF-8 编码不超过 72 字节");
+        }
         // ⚠️ 顺序重要:必须**先**查 key-id 是否在密钥集里,再查取到的值空不空。
         //    反过来的话,key-id 拼错时 keys.get() 返 null,会先抛"密钥为空,检查 .env" ——
         //    而 .env 明明是对的,排查方向被彻底带偏。
@@ -61,12 +69,20 @@ public class SecretGuard {
                             + " 不在 accepted-key-ids " + props.getQr().getAcceptedKeyIds()
                             + " 里 —— 服务端会拒绝自己刚签发的二维码(07 §3.4.1)");
         }
+        for (String keyId : props.getQr().getAcceptedKeyIds()) {
+            if (!props.getQr().getKeys().containsKey(keyId)) {
+                throw new IllegalStateException(
+                        "reservex.qr.accepted-key-ids 包含 " + keyId
+                                + ",但 reservex.qr.keys 未配置对应密钥");
+            }
+        }
 
         Map<String, String> secrets = new LinkedHashMap<>();
         secrets.put("reservex.aes.keys." + props.getAes().getKeyId(),
                 props.getAes().getKeys().get(props.getAes().getKeyId()));
         secrets.put("reservex.id-hash.pepper", props.getIdHash().getPepper());
-        secrets.put("reservex.qr.hmac-key", props.getQr().getHmacKey());
+        props.getQr().getAcceptedKeyIds().forEach(keyId ->
+                secrets.put("reservex.qr.keys." + keyId, props.getQr().getKeys().get(keyId)));
         secrets.put("sa-token.jwt-secret-key", jwtSecret);
 
         // ① 存在且够长。空值最常见的来源:.env 缺变量 → compose 静默替换成空串

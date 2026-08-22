@@ -1,19 +1,22 @@
 package com.reservex.service;
 
 import cn.dev33.satoken.stp.StpLogic;
+import cn.dev33.satoken.session.SaSession;
 import com.google.common.util.concurrent.RateLimiter;
 import com.reservex.common.BizException;
 import com.reservex.common.ErrorCode;
+import com.reservex.common.HttpPreconditions;
 import com.reservex.common.RequestIdFilter;
 import com.reservex.common.TimeSupport;
 import com.reservex.config.ReserveXProperties;
 import com.reservex.id.IdGenerator;
 import com.reservex.lua.LuaScripts;
 import com.reservex.entity.Reservation;
-import com.reservex.entity.ReservationEvent;
+import com.reservex.entity.ReservationTransitionOutbox;
 import com.reservex.mapper.sharding.ReservationMapper;
-import com.reservex.mapper.single.ReservationEventMapper;
+import com.reservex.mapper.sharding.ReservationTransitionOutboxMapper;
 import com.reservex.mapper.single.StateLogMapper;
+import com.reservex.mapper.single.StuckReservationMapper;
 import com.reservex.message.ReservationCreatedMessage;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
@@ -51,11 +54,13 @@ public class ReservationService {
     private final StpLogic stpLogic;
     private final SlotService slotService;
     private final ReservationMapper reservationMapper;
-    private final ReservationEventMapper eventMapper;
+    private final ReservationTransitionOutboxMapper outboxMapper;
+    private final ReservationTransitionOutboxService transitionOutbox;
     private final StateLogMapper stateLogMapper;
-    private final TransactionTemplate singleTx;
+    private final TransactionTemplate shardingTx;
     private final RateLimiter localLimiter;
     private final CaptchaService captchaService;
+    private final StuckReservationMapper stuckMapper;
 
     public ReservationService(IdGenerator idGenerator,
                               TimeSupport time,
@@ -66,10 +71,12 @@ public class ReservationService {
                               StpLogic stpLogic,
                               SlotService slotService,
                               ReservationMapper reservationMapper,
-                              ReservationEventMapper eventMapper,
+                              ReservationTransitionOutboxMapper outboxMapper,
+                              ReservationTransitionOutboxService transitionOutbox,
                               StateLogMapper stateLogMapper,
                               CaptchaService captchaService,
-                              @Qualifier("singleTxManager") PlatformTransactionManager txManager) {
+                              StuckReservationMapper stuckMapper,
+                              @Qualifier("shardingTxManager") PlatformTransactionManager txManager) {
         this.idGenerator = idGenerator;
         this.time = time;
         this.props = props;
@@ -79,10 +86,12 @@ public class ReservationService {
         this.stpLogic = stpLogic;
         this.slotService = slotService;
         this.reservationMapper = reservationMapper;
-        this.eventMapper = eventMapper;
+        this.outboxMapper = outboxMapper;
+        this.transitionOutbox = transitionOutbox;
         this.stateLogMapper = stateLogMapper;
         this.captchaService = captchaService;
-        this.singleTx = new TransactionTemplate(txManager);
+        this.stuckMapper = stuckMapper;
+        this.shardingTx = new TransactionTemplate(txManager);
         this.localLimiter = RateLimiter.create(props.getRatelimit().getApiLocalRps());
     }
 
@@ -153,7 +162,6 @@ public class ReservationService {
                 dupKey, Long.toString(endTtl), slotDate.toString(), Integer.toString(slotHour),
                 Long.toString(validUntilEpoch), idCardMasked, Long.toString(createMillis),
                 PENDING_KEY, fullKey, Long.toString(endTtl),
-                Integer.toString(props.getPending().getOccupyTtlSec()),
                 Integer.toString(props.getRatelimit().getUserRedisRps()),
                 Integer.toString(props.getRatelimit().getSlotRedisRps()));
         if (result == null || result == 0) {
@@ -162,6 +170,11 @@ public class ReservationService {
             throw BizException.of(ErrorCode.SLOT_FULL);
         }
         if (result == -1) {
+            Long existingReservationNo = duplicateReservationNo(dupKey);
+            if (existingReservationNo != null
+                    && isOwnDuplicate(userId, slotId, existingReservationNo)) {
+                return new GrabResult(existingReservationNo, false);
+            }
             // D4:配额已用同样计风控(短时间内反复尝试同证)。
             captchaService.recordGrabFailure(userId);
             throw BizException.of(ErrorCode.QUOTA_USED);
@@ -178,9 +191,17 @@ public class ReservationService {
         if (actualBucket == null) {
             // Lua 已成功，pending scanner 会补投；不能把成功说成失败让用户重复点击。
             log.error("抢号成功但读不到 occupy.bucket_no rno={}", reservationNo);
-            return new GrabResult(reservationNo);
+            return new GrabResult(reservationNo, true);
         }
-        int bucketNo = Integer.parseInt(actualBucket.toString());
+        int bucketNo;
+        try {
+            bucketNo = Integer.parseInt(actualBucket.toString());
+        } catch (NumberFormatException e) {
+            // Redis 预占已经成功；保留 pending/occupy 交给扫描器隔离，不能让客户端重抢。
+            redis.persist(occupyKey);
+            log.error("抢号成功但 occupy.bucket_no 非法 rno={}", reservationNo, e);
+            return new GrabResult(reservationNo, true);
+        }
         String requestId = MDC.get(RequestIdFilter.MDC_KEY);
         if (requestId == null || requestId.isBlank()) {
             requestId = "rc-" + reservationNo;
@@ -192,10 +213,38 @@ public class ReservationService {
         try {
             rocketMQ.syncSend("reservation-created", message);
         } catch (RuntimeException e) {
-            // Redis 预占已经成立；保留 pending，由 scanner 复用同 eventId 补投。
+            // 已向用户返回的预约不能随传输故障过期；补投成功后 scanner 会恢复 TTL。
+            redis.persist(occupyKey);
             log.error("预约消息发送失败，等待 pending scanner 补投 rno={}", reservationNo, e);
         }
-        return new GrabResult(reservationNo);
+        return new GrabResult(reservationNo, true);
+    }
+
+    private Long duplicateReservationNo(String dupKey) {
+        String value = redis.opsForValue().get(dupKey);
+        if (value == null) {
+            return null;
+        }
+        try {
+            long reservationNo = Long.parseLong(value);
+            return reservationNo > 0 ? reservationNo : null;
+        } catch (NumberFormatException e) {
+            log.error("dup 值不是有效预约号");
+            return null;
+        }
+    }
+
+    private boolean isOwnDuplicate(long userId, long slotId, long reservationNo) {
+        Map<Object, Object> occupy = redis.opsForHash().entries(occupyKey(reservationNo));
+        if (!occupy.isEmpty()) {
+            if ("1".equals(string(occupy.get("rollback_pending")))) {
+                return false;
+            }
+            return Long.toString(userId).equals(string(occupy.get("user_id")))
+                    && Long.toString(slotId).equals(string(occupy.get("slot_id")));
+        }
+        Reservation persisted = findOwn(userId, reservationNo);
+        return persisted != null && persisted.getSlotId() == slotId;
     }
 
     public List<ReservationView> mine(long userId) {
@@ -229,6 +278,11 @@ public class ReservationService {
                 }
             }
         }
+        for (com.reservex.entity.StuckReservation stuck : stuckMapper.selectByUser(userId)) {
+            if (!seen.contains(stuck.getReservationNo())) {
+                result.add(stuckView(stuck));
+            }
+        }
         result.sort((a, b) -> b.createAt().compareTo(a.createAt()));
         return result;
     }
@@ -238,13 +292,16 @@ public class ReservationService {
      * 按 slotId 查非分片键会广播,低频管理操作可接受(见 ReservationMapper 注释)。
      * 脱敏返回,不暴露 idCardHash 明文关联。
      */
-    public List<ReservationView> listToday(SlotService slotService) {
+    public List<StaffReservationView> listToday(SlotService slotService) {
         List<Reservation> rows = reservationMapper.selectList(new LambdaQueryWrapper<Reservation>()
                 .eq(Reservation::getSlotDate, time.today())
                 .orderByAsc(Reservation::getSlotId));
-        List<ReservationView> result = new ArrayList<>(rows.size());
+        List<StaffReservationView> result = new ArrayList<>(rows.size());
         for (Reservation row : rows) {
-            result.add(toView(row));
+            SlotService.SlotView slot = slotService.getSlot(row.getSlotId());
+            result.add(new StaffReservationView(row.getReservationNo(), row.getSlotId(), row.getSlotDate(),
+                    slot.slotHour(), statusName(row.getStatus()), row.getVersion(), row.getCreateAt(),
+                    row.getVerifiedAt()));
         }
         return result;
     }
@@ -254,31 +311,28 @@ public class ReservationService {
         if (row != null) {
             return toView(row);
         }
+        com.reservex.entity.StuckReservation stuck = stuckMapper.selectById(rno);
+        if (stuck != null && Long.valueOf(userId).equals(stuck.getUserId())) {
+            return stuckView(stuck);
+        }
         ReservationView occupy = occupyView(rno, userId, true);
         if (occupy != null) {
             return occupy;
         }
-        Reservation other = reservationMapper.selectById(rno);
-        if (other != null) {
-            throw BizException.of(ErrorCode.FORBIDDEN);
-        }
         throw BizException.of(ErrorCode.RESERVATION_NOT_FOUND);
     }
 
-    public void cancel(long userId, long rno) {
+    public void cancel(long userId, long rno, HttpPreconditions.VersionCondition condition) {
         Reservation row = findOwn(userId, rno);
         if (row != null) {
+            requireVersion(condition, row.getVersion());
             switch (row.getStatus()) {
                 case 1 -> throw BizException.of(ErrorCode.ALREADY_VERIFIED);
-                case 2 -> throw BizException.of(ErrorCode.ALREADY_CANCELLED);
+                case 2 -> { return; }
                 case 3 -> throw BizException.of(ErrorCode.ALREADY_EXPIRED);
                 default -> {
                     LocalDateTime now = time.now();
-                    if (reservationMapper.cancelByNo(rno, now) == 1) {
-                        singleTx.executeWithoutResult(status -> {
-                            stateLogMapper.cancel("rx-" + rno);
-                            eventMapper.insertIgnore(cancelEvent(rno, userId, now));
-                        });
+                    if (cancelPersisted(row, now)) {
                         return;
                     }
                     Reservation latest = findOwn(userId, rno);
@@ -290,20 +344,96 @@ public class ReservationService {
             }
         }
 
-        Reservation other = reservationMapper.selectById(rno);
-        if (other != null) {
-            throw BizException.of(ErrorCode.FORBIDDEN);
+        requireVersion(condition, 0);
+        com.reservex.entity.StuckReservation stuck = stuckMapper.selectById(rno);
+        if (stuck != null && Long.valueOf(userId).equals(stuck.getUserId())) {
+            throw BizException.of(ErrorCode.STATE_CONFLICT);
         }
         String occupyKey = occupyKey(rno);
-        Object owner = redis.opsForHash().get(occupyKey, "user_id");
-        if (owner == null) {
+        LocalDateTime cancelTime = time.now();
+        Long marked = lua.evalLong(LuaScripts.Script.MARK_CANCEL, List.of(occupyKey),
+                Long.toString(userId), requestId("cancelled-" + rno),
+                Long.toString(time.toEpochSecond(cancelTime)));
+        if (Long.valueOf(-1).equals(marked)) {
             throw BizException.of(ErrorCode.RESERVATION_NOT_FOUND);
         }
-        if (!Long.toString(userId).equals(owner.toString())) {
-            throw BizException.of(ErrorCode.FORBIDDEN);
+        if (Long.valueOf(2).equals(marked)) {
+            throw BizException.of(ErrorCode.ALREADY_EXPIRED);
         }
-        redis.opsForHash().put(occupyKey, "cancelled", "1");
-        stateLogMapper.insertOrCancel("rx-" + rno, Long.toString(rno));
+        Reservation raced;
+        if (Long.valueOf(0).equals(marked)) {
+            // Consumer cleanup deletes occupy only after persistence; close that race in the DB.
+            raced = findOwn(userId, rno);
+            if (raced == null) {
+                throw BizException.of(ErrorCode.RESERVATION_NOT_FOUND);
+            }
+        } else if (Long.valueOf(1).equals(marked)) {
+            stateLogMapper.insertOrCancel("rx-" + rno, Long.toString(rno));
+            // The consumer may have persisted from an older snapshot; finish its cancellation here.
+            raced = findOwn(userId, rno);
+            if (raced == null) {
+                return;
+            }
+        } else {
+            throw BizException.of(ErrorCode.SERVICE_DEGRADED);
+        }
+        switch (raced.getStatus()) {
+            case 1 -> throw BizException.of(ErrorCode.ALREADY_VERIFIED);
+            case 2 -> { return; }
+            case 3 -> throw BizException.of(ErrorCode.ALREADY_EXPIRED);
+            default -> {
+                if (cancelPersisted(raced, cancelTime)) {
+                    return;
+                }
+                Reservation latest = findOwn(userId, rno);
+                if (latest != null && latest.getStatus() != 0) {
+                    if (latest.getStatus() == 2) {
+                        return;
+                    }
+                    throw statusError(latest.getStatus());
+                }
+                throw BizException.of(ErrorCode.ALREADY_EXPIRED);
+            }
+        }
+    }
+
+    private boolean cancelPersisted(Reservation reservation, LocalDateTime now) {
+        ReservationTransitionOutbox outbox = cancellationTransition(reservation, now);
+        Boolean committed = shardingTx.execute(status -> {
+            if (reservationMapper.cancelByNo(reservation.getUserId(),
+                    reservation.getReservationNo(), reservation.getVersion(), now) != 1) {
+                return false;
+            }
+            outboxMapper.insert(outbox);
+            return true;
+        });
+        if (Boolean.TRUE.equals(committed)) {
+            transitionOutbox.tryPublish(outbox);
+            return true;
+        }
+        return false;
+    }
+
+    private ReservationTransitionOutbox cancellationTransition(Reservation reservation,
+                                                               LocalDateTime now) {
+        ReservationTransitionOutbox outbox = new ReservationTransitionOutbox();
+        outbox.setTransitionId("cancelled-" + reservation.getReservationNo());
+        outbox.setUserId(reservation.getUserId());
+        outbox.setReservationNo(reservation.getReservationNo());
+        outbox.setEventType("CANCELLED");
+        outbox.setOperatorType("USER");
+        outbox.setOperatorId(reservation.getUserId());
+        outbox.setManual(false);
+        outbox.setRequestId(requestId("cancelled-" + reservation.getReservationNo()));
+        outbox.setEventTime(now);
+        outbox.setCreateAt(now);
+        return outbox;
+    }
+
+    private static void requireVersion(HttpPreconditions.VersionCondition condition, int version) {
+        if (!condition.matches(version)) {
+            throw BizException.of(ErrorCode.PRECONDITION_FAILED);
+        }
     }
 
     private Reservation findOwn(long userId, long rno) {
@@ -326,33 +456,40 @@ public class ReservationService {
         }
         if (!Long.toString(userId).equals(value(occupy, "user_id"))) {
             if (rejectForeign) {
-                throw BizException.of(ErrorCode.FORBIDDEN);
+                throw BizException.of(ErrorCode.RESERVATION_NOT_FOUND);
             }
             return null;
         }
-        String status = "1".equals(string(occupy.get("cancelled"))) ? "CANCELLED"
-                : "1".equals(string(occupy.get("expired"))) ? "EXPIRED" : "PENDING";
-        long createMillis = Long.parseLong(value(occupy, "create_ts"));
-        return new ReservationView(rno, Long.parseLong(value(occupy, "slot_id")),
-                LocalDate.parse(value(occupy, "slot_date")),
-                Integer.parseInt(value(occupy, "slot_hour")), status, 0,
-                LocalDateTime.ofInstant(Instant.ofEpochMilli(createMillis), time.zone()), null,
-                string(occupy.get("id_card_masked")));
+        try {
+            String status = "1".equals(string(occupy.get("cancelled"))) ? "CANCELLED"
+                    : "1".equals(string(occupy.get("expired"))) ? "EXPIRED" : "PENDING";
+            long createMillis = Long.parseLong(value(occupy, "create_ts"));
+            return new ReservationView(rno, Long.parseLong(value(occupy, "slot_id")),
+                    LocalDate.parse(value(occupy, "slot_date")),
+                    Integer.parseInt(value(occupy, "slot_hour")), status, 0,
+                    LocalDateTime.ofInstant(Instant.ofEpochMilli(createMillis), time.zone()), null,
+                    string(occupy.get("id_card_masked")));
+        } catch (RuntimeException e) {
+            log.error("occupy 载荷损坏 rno={}", rno, e);
+            if (rejectForeign) {
+                throw new BizException(ErrorCode.SERVICE_DEGRADED, "预约在途数据损坏，请联系管理员");
+            }
+            return null;
+        }
     }
 
-    private ReservationEvent cancelEvent(long rno, long userId, LocalDateTime now) {
-        ReservationEvent event = new ReservationEvent();
-        event.setEventId("cancelled-" + rno);
-        event.setReservationNo(rno);
-        event.setEventType("CANCELLED");
-        event.setFromStatus(0);
-        event.setToStatus(2);
-        event.setOperatorType("USER");
-        event.setOperatorId(userId);
+    private ReservationView stuckView(com.reservex.entity.StuckReservation stuck) {
+        SlotService.SlotView slot = slotService.getSlot(stuck.getSlotId());
+        String status = Integer.valueOf(0).equals(stuck.getStatus())
+                || Integer.valueOf(4).equals(stuck.getStatus())
+                ? "REVIEW_REQUIRED" : "FAILED";
+        return new ReservationView(stuck.getReservationNo(), stuck.getSlotId(), stuck.getSlotDate(),
+                slot.slotHour(), status, 0, stuck.getCreateAt(), null, null);
+    }
+
+    private static String requestId(String fallback) {
         String requestId = MDC.get(RequestIdFilter.MDC_KEY);
-        event.setRequestId(requestId == null ? "cancelled-" + rno : requestId);
-        event.setEventTime(now);
-        return event;
+        return requestId == null || requestId.isBlank() ? fallback : requestId;
     }
 
     private static BizException statusError(int status) {
@@ -375,7 +512,8 @@ public class ReservationService {
     }
 
     private String tokenExtra(String name) {
-        Object value = stpLogic.getExtra(name);
+        SaSession session = stpLogic.getTokenSession();
+        Object value = session == null ? null : session.get(name);
         if (value == null || value.toString().isBlank()) {
             throw BizException.of(ErrorCode.UNAUTHORIZED);
         }
@@ -414,11 +552,16 @@ public class ReservationService {
         return "slot:meta:" + slotId;
     }
 
-    public record GrabResult(Long reservationNo) {
+    public record GrabResult(Long reservationNo, boolean created) {
     }
 
     public record ReservationView(Long reservationNo, Long slotId, LocalDate slotDate,
                                   Integer slotHour, String status, Integer version,
                                   LocalDateTime createAt, LocalDateTime verifyTime, String idCardMasked) {
+    }
+
+    public record StaffReservationView(Long reservationNo, Long slotId, LocalDate slotDate,
+                                        Integer slotHour, String status, Integer version,
+                                        LocalDateTime createAt, LocalDateTime verifyTime) {
     }
 }

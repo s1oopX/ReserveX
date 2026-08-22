@@ -7,6 +7,7 @@ import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.shardingsphere.driver.api.ShardingSphereDataSourceFactory;
 import org.apache.shardingsphere.infra.algorithm.core.config.AlgorithmConfiguration;
 import org.apache.shardingsphere.infra.config.mode.ModeConfiguration;
+import org.apache.shardingsphere.infra.config.mode.PersistRepositoryConfiguration;
 import org.apache.shardingsphere.infra.config.rule.RuleConfiguration;
 import org.apache.shardingsphere.sharding.api.config.ShardingRuleConfiguration;
 import org.apache.shardingsphere.sharding.api.config.rule.ShardingTableReferenceRuleConfiguration;
@@ -31,8 +32,9 @@ import java.util.Properties;
 /**
  * 分库数据源:ds0 / ds1 由 ShardingSphere 托管(03 §八)。
  *
- * <p><b>分片规则只覆盖两张表</b>:{@code user} 与 {@code reservation},
- * 都按 {@code user_id mod 2} 分库,且互为**绑定表** —— 同 user_id 的两表落同一库,
+ * <p><b>分片规则只覆盖三张表</b>:{@code user}、{@code reservation} 与
+ * {@code reservation_transition_outbox},都按 {@code user_id mod 2} 分库。
+ * user/reservation 是**绑定表** —— 同 user_id 的两表落同一库,
  * join 命中同库而不产生笛卡尔积。
  *
  * <p>⚠️ <b>单库表一张都不在这里</b>。03 §1.1 明确不用广播表:13 张单库表走
@@ -67,7 +69,17 @@ public class ShardingDataSourceConfig {
 
         return ShardingSphereDataSourceFactory.createDataSource(
                 LOGIC_DB,
-                new ModeConfiguration("Standalone", null),
+                new ModeConfiguration("Standalone", new PersistRepositoryConfiguration() {
+                    @Override
+                    public String getType() {
+                        return "JDBC";
+                    }
+
+                    @Override
+                    public Properties getProps() {
+                        return new Properties();
+                    }
+                }),
                 actualDataSources,
                 List.<RuleConfiguration>of(shardingRule()),
                 ssProps);
@@ -84,6 +96,7 @@ public class ShardingDataSourceConfig {
 
         rule.getTables().add(shardedTable("user"));
         rule.getTables().add(shardedTable("reservation"));
+        rule.getTables().add(shardedTable("reservation_transition_outbox"));
 
         // 绑定表:同 user_id 的 user 与 reservation 必落同库,join 不跨库
         rule.getBindingTableGroups().add(
@@ -161,6 +174,6 @@ public class ShardingDataSourceConfig {
 
     /** 供启动断言核对"分片规则是否只覆盖了预期的表"。 */
     static Collection<String> shardedLogicTables() {
-        return List.of("user", "reservation");
+        return List.of("user", "reservation", "reservation_transition_outbox");
     }
 }

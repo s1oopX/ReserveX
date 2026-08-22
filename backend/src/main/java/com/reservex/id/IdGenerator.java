@@ -7,6 +7,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -50,7 +51,7 @@ public class IdGenerator {
 
     @PostConstruct
     public void init() {
-        long datacenterId = clamp(props.getId().getDatacenterId());
+        long datacenterId = requireRange("DATACENTER_ID", props.getId().getDatacenterId());
         long workerId = resolveWorkerId();
         this.snowflake = IdUtil.getSnowflake(workerId, datacenterId);
         log.info("IdGenerator 就绪 workerId={} datacenterId={}", workerId, datacenterId);
@@ -73,10 +74,19 @@ public class IdGenerator {
                     log.info("workerId 来自环境变量 WORKER_ID={}", parsed);
                     return parsed;
                 }
+                if (isProduction()) {
+                    throw new IllegalStateException("生产环境 WORKER_ID 必须是 0~31");
+                }
                 log.warn("WORKER_ID={} 越界(允许 0~31),忽略走 Redis 分配", parsed);
             } catch (NumberFormatException e) {
+                if (isProduction()) {
+                    throw new IllegalStateException("生产环境 WORKER_ID 必须是 0~31", e);
+                }
                 log.warn("WORKER_ID={} 非整数,忽略走 Redis 分配", envVal);
             }
+        }
+        if (isProduction()) {
+            throw new IllegalStateException("生产环境必须显式配置 WORKER_ID=0..31");
         }
         try {
             Long incr = redis.opsForValue().increment(REDIS_KEY);
@@ -95,5 +105,19 @@ public class IdGenerator {
 
     private static long clamp(long v) {
         return Math.max(0L, Math.min(MAX_ID, v));
+    }
+
+    private long requireRange(String name, long value) {
+        if (value < 0 || value > MAX_ID) {
+            if (isProduction()) {
+                throw new IllegalStateException(name + " 必须是 0~31");
+            }
+            return clamp(value);
+        }
+        return value;
+    }
+
+    private boolean isProduction() {
+        return env.acceptsProfiles(Profiles.of("prod"));
     }
 }

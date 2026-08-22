@@ -15,7 +15,7 @@ import java.time.ZoneId;
  *
  * <p><b>全项目禁止 {@code ZoneId.systemDefault()} 与 {@code LocalDateTime.now()} 裸调。</b>
  * 前者读容器 {@code TZ},漏配就静默偏 8h 且无任何报错;后者等价于前者。
- * 时区只从 {@code reservex.zone} 一处取,与 {@code dup-ttl-mode} 等派生规则共用同一 {@link ZoneId}。
+ * 时区只从 {@code reservex.zone} 一处取,所有按日期派生的 TTL 共用同一 {@link ZoneId}。
  *
  * <p>为什么这个 8 小时特别致命:{@code dup_ttl} 要算"{@code slot_date} 当日 23:59:59 距现在多少秒"。
  * JVM 若在 UTC,它算出的是**北京时间次日 07:59:59** —— dup 多活 8 小时看似无害,

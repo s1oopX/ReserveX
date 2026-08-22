@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.single.DeadLetterMessageMapper">
+
+    <resultMap id="BaseResultMap" type="com.reservex.entity.DeadLetterMessage">
+        <id property="messageId" column="message_id"/>
+        <result property="sourceGroup" column="source_group"/>
+        <result property="targetTopic" column="target_topic"/>
+        <result property="body" column="body"/>
+        <result property="reconsumeTimes" column="reconsume_times"/>
+        <result property="status" column="status"/>
+        <result property="capturedAt" column="captured_at"/>
+        <result property="updateAt" column="update_at"/>
+        <result property="resolverId" column="resolver_id"/>
+    </resultMap>
+
+    <insert id="insertIgnore">
+        INSERT IGNORE INTO `dead_letter_message`
+          (`message_id`, `source_group`, `target_topic`, `body`, `reconsume_times`,
+           `status`, `captured_at`, `update_at`, `resolver_id`)
+        VALUES
+          (#{messageId}, #{sourceGroup}, #{targetTopic}, #{body}, #{reconsumeTimes},
+           #{status}, #{capturedAt}, #{updateAt}, #{resolverId})
+    </insert>
+
+    <select id="selectRecent" resultMap="BaseResultMap">
+        SELECT `message_id`, `source_group`, `target_topic`, `body`, `reconsume_times`,
+               `status`, `captured_at`, `update_at`, `resolver_id`
+        FROM `dead_letter_message`
+        ORDER BY `captured_at` DESC
+        LIMIT #{limit}
+    </select>
+
+    <update id="claimReplay">
+        UPDATE `dead_letter_message`
+        SET `status` = 2, `update_at` = #{now}, `resolver_id` = #{resolverId}
+        WHERE `message_id` = #{messageId}
+          AND (`status` = 0 OR (`status` = 2 AND `update_at` &lt; #{staleBefore}))
+    </update>
+
+    <update id="completeReplay">
+        UPDATE `dead_letter_message`
+        SET `status` = 1, `update_at` = #{now}, `resolver_id` = #{resolverId}
+        WHERE `message_id` = #{messageId} AND `status` = 2
+    </update>
+
+    <update id="releaseReplay">
+        UPDATE `dead_letter_message`
+        SET `status` = 0, `update_at` = NULL, `resolver_id` = NULL
+        WHERE `message_id` = #{messageId} AND `status` = 2
+    </update>
+
+</mapper>

@@ -23,7 +23,9 @@ public interface PhoneRouteMapper extends BaseMapper<PhoneRoute> {
     /** 补偿删除。条件带 {@code user_id},只删自己写的那行。 */
     int deleteByPhoneAndUser(@Param("phone") String phone, @Param("userId") Long userId);
 
-    /** 孤儿 route 清理扫描,同 {@link EmailRouteMapper#selectOrphansOlderThan}。 */
+    /** 孤儿 route 检测扫描,同 {@link EmailRouteMapper#selectOrphansOlderThan}。 */
     List<PhoneRoute> selectOrphansOlderThan(@Param("cutoff") LocalDateTime cutoff,
+                                            @Param("afterCreateAt") LocalDateTime afterCreateAt,
+                                            @Param("afterPhone") String afterPhone,
                                             @Param("limit") int limit);
 }

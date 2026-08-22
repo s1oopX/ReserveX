@@ -5,26 +5,39 @@ import com.reservex.common.ErrorCode;
 import com.reservex.common.TimeSupport;
 import com.reservex.config.ReserveXProperties;
 import com.reservex.entity.Reservation;
+import com.reservex.entity.ReservationTransitionOutbox;
+import com.reservex.entity.Slot;
+import com.reservex.entity.StateLog;
 import com.reservex.id.IdGenerator;
 import com.reservex.mapper.sharding.ReservationMapper;
-import com.reservex.mapper.single.AuditLogMapper;
-import com.reservex.mapper.single.ReservationEventMapper;
+import com.reservex.mapper.sharding.ReservationTransitionOutboxMapper;
+import com.reservex.mapper.single.SlotMapper;
 import com.reservex.mapper.single.StateLogMapper;
 import com.reservex.mapper.single.VerificationLogMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Base64;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class QrServiceTest {
@@ -32,6 +45,9 @@ class QrServiceTest {
     private static final long USER_ID = 11L;
     private static final long RNO = 22L;
     private static final String HMAC_KEY = "test-only-qr-hmac-key";
+    private static final String OLD_HMAC_KEY = "test-only-old-qr-hmac-key";
+    private static final LocalDate DATE = LocalDate.of(2026, 8, 16);
+    private static final LocalDateTime NOW = DATE.atTime(10, 0);
 
     @Test
     void issuedPayloadHasValidHmacAndRejectsTampering() throws Exception {
@@ -46,8 +62,8 @@ class QrServiceTest {
         assertThat(parts).hasSize(6);
         assertThat(parts[5]).isEqualTo(Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(mac.doFinal(unsigned.getBytes(StandardCharsets.UTF_8))));
-        assertThat(qr.exp()).isBetween(Instant.now().getEpochSecond() + 58,
-                Instant.now().getEpochSecond() + 61);
+        assertThat(qr.exp()).isEqualTo(NOW.atZone(ZoneId.of("Asia/Shanghai")).toEpochSecond()
+                + fixture.props.getQr().getTtlSec());
 
         String tampered = qr.payload().replace("." + RNO + ".", ".23.");
         assertThatThrownBy(() -> fixture.service.verifyScan(99L, tampered))
@@ -62,11 +78,30 @@ class QrServiceTest {
         when(fixture.reservationMapper.selectById(RNO))
                 .thenReturn(fixture.reservation)
                 .thenReturn(null);
-        when(fixture.reservationMapper.verifyByNo(any(), any(), any())).thenReturn(0);
+        when(fixture.reservationMapper.verifyByNo(any(), any(), any(), any())).thenReturn(0);
 
         assertThatThrownBy(() -> fixture.service.verifyScan(99L, qr.payload()))
                 .isInstanceOfSatisfying(BizException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.RESERVATION_NOT_FOUND));
+    }
+
+    @Test
+    void successfulVerifyPersistsOutboxBeforeBestEffortPublish() {
+        Fixture fixture = fixture();
+        when(fixture.reservationMapper.verifyByNo(USER_ID, RNO, 0, NOW)).thenReturn(1);
+        when(fixture.idGenerator.nextId()).thenReturn(901L);
+
+        QrService.QrView qr = fixture.service.issue(USER_ID, RNO);
+        assertThat(fixture.service.verifyScan(99L, qr.payload()).alreadyVerified()).isFalse();
+
+        ArgumentCaptor<ReservationTransitionOutbox> captor =
+                ArgumentCaptor.forClass(ReservationTransitionOutbox.class);
+        verify(fixture.outboxMapper).insert(captor.capture());
+        ReservationTransitionOutbox outbox = captor.getValue();
+        assertThat(outbox.getTransitionId()).isEqualTo("verified-" + RNO);
+        assertThat(outbox.getUserId()).isEqualTo(USER_ID);
+        assertThat(outbox.getOperatorId()).isEqualTo(99L);
+        verify(fixture.transitionOutbox).tryPublish(outbox);
     }
 
     /**
@@ -113,14 +148,120 @@ class QrServiceTest {
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.QR_EXPIRED));
     }
 
+    @Test
+    void acceptedPreviousKeyRemainsVerifiableDuringRotation() {
+        Fixture fixture = fixture();
+        String oldKeyId = "qr-v0";
+        fixture.props.getQr().getKeys().put(oldKeyId, OLD_HMAC_KEY);
+        fixture.props.getQr().getAcceptedKeyIds().add(oldKeyId);
+        fixture.reservation.setStatus(1);
+
+        long exp = NOW.atZone(ZoneId.of("Asia/Shanghai")).toEpochSecond() + 60;
+        String payload = payloadAt(oldKeyId, OLD_HMAC_KEY, exp);
+
+        assertThat(fixture.service.verifyScan(99L, payload).alreadyVerified()).isTrue();
+
+        fixture.props.getQr().getAcceptedKeyIds().remove(oldKeyId);
+        assertThatThrownBy(() -> fixture.service.verifyScan(99L, payload))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.QR_INVALID));
+    }
+
+    @Test
+    void futureSessionCannotIssueOrVerify() {
+        Fixture fixture = fixture();
+        fixture.slot.setSlotHour(11);
+
+        assertThatThrownBy(() -> fixture.service.issue(USER_ID, RNO))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.RESERVATION_NOT_STARTED));
+
+        String payload = payloadAt(NOW.atZone(ZoneId.of("Asia/Shanghai")).toEpochSecond() + 60);
+        assertThatThrownBy(() -> fixture.service.verifyScan(99L, payload))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.RESERVATION_NOT_STARTED));
+        assertThatThrownBy(() -> fixture.service.verifyManual(99L, RNO, "1234"))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.RESERVATION_NOT_STARTED));
+        verify(fixture.reservationMapper, never()).verifyByNo(any(), any(), any(), any());
+    }
+
+    @Test
+    void expiredReservationCannotIssueOrVerifyBeforeScannerCatchesUp() {
+        Fixture fixture = fixture();
+        fixture.reservation.setValidUntil(NOW.minusSeconds(1));
+
+        assertThatThrownBy(() -> fixture.service.issue(USER_ID, RNO))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.ALREADY_EXPIRED));
+
+        String payload = payloadAt(NOW.atZone(ZoneId.of("Asia/Shanghai")).toEpochSecond() + 60);
+        assertThatThrownBy(() -> fixture.service.verifyScan(99L, payload))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.ALREADY_EXPIRED));
+        assertThatThrownBy(() -> fixture.service.verifyManual(99L, RNO, "1234"))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.ALREADY_EXPIRED));
+        verify(fixture.reservationMapper, never()).verifyByNo(any(), any(), any(), any());
+    }
+
+    @Test
+    void reservationRowIsNotVerifiableBeforePersistenceTransactionCompletes() {
+        Fixture fixture = fixture();
+        when(fixture.stateLogMapper.selectById("rx-" + RNO)).thenReturn(null);
+
+        assertThatThrownBy(() -> fixture.service.verifyManual(
+                99L, RNO, "1234"))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode())
+                                .isEqualTo(ErrorCode.RESERVATION_CONFIRMING));
+        verify(fixture.reservationMapper, never()).verifyByNo(any(), any(), any(), any());
+    }
+
+    @Test
+    void manualVerificationRequiresOnlyMatchingLastFourDigits() {
+        Fixture fixture = fixture();
+
+        assertThatThrownBy(() -> fixture.service.verifyManual(99L, RNO, "123"))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.BAD_REQUEST));
+        assertThatThrownBy(() -> fixture.service.verifyManual(99L, RNO, "9999"))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.BAD_REQUEST));
+        ArgumentCaptor<com.reservex.entity.VerificationLog> attempts =
+                ArgumentCaptor.forClass(com.reservex.entity.VerificationLog.class);
+        verify(fixture.verificationMapper, org.mockito.Mockito.times(2))
+                .insertAttempt(attempts.capture());
+        assertThat(attempts.getAllValues()).allMatch(log -> log.getResult() == 4);
+    }
+
+    @Test
+    void manualVerificationFailsClosedWhenAttemptLimitIsReached() {
+        Fixture fixture = fixture();
+        doReturn(0L).when(fixture.redis).execute(any(DefaultRedisScript.class),
+                any(List.class), any(), any(), any());
+
+        assertThatThrownBy(() -> fixture.service.verifyManual(99L, RNO, "1234"))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.RATE_LIMITED));
+        verify(fixture.reservationMapper, never()).verifyByNo(any(), any(), any(), any());
+        assertThatThrownBy(() -> fixture.service.verifyManual(99L, RNO, "9999"))
+                .isInstanceOfSatisfying(BizException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.RATE_LIMITED));
+    }
+
     private static String propsKeyId() {
         return new ReserveXProperties().getQr().getKeyId();
     }
 
     private static String signWithTestKey(String content) {
+        return sign(content, HMAC_KEY);
+    }
+
+    private static String sign(String content, String key) {
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(HMAC_KEY.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
             return Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(mac.doFinal(content.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception e) {
@@ -128,32 +269,85 @@ class QrServiceTest {
         }
     }
 
+    private static String payloadAt(long exp) {
+        return payloadAt(propsKeyId(), HMAC_KEY, exp);
+    }
+
+    private static String payloadAt(String keyId, String key, long exp) {
+        String nonce = "0123456789abcdef0123456789abcdef";
+        String unsigned = "v1|" + keyId + "|" + RNO + "|" + exp + "|" + nonce;
+        return "v1." + keyId + "." + RNO + "." + exp + "." + nonce + "."
+                + sign(unsigned, key);
+    }
+
     private static Fixture fixture() {
         ReservationMapper reservationMapper = mock(ReservationMapper.class);
+        SlotMapper slotMapper = mock(SlotMapper.class);
         Reservation reservation = new Reservation();
         reservation.setReservationNo(RNO);
         reservation.setUserId(USER_ID);
+        reservation.setSlotId(33L);
+        reservation.setSlotDate(DATE);
+        reservation.setValidUntil(DATE.atTime(12, 0));
+        reservation.setIdCardMasked("310***********1234");
         reservation.setStatus(0);
         reservation.setVersion(0);
         when(reservationMapper.selectOne(any())).thenReturn(reservation);
+        when(reservationMapper.selectById(RNO)).thenReturn(reservation);
+
+        Slot slot = new Slot();
+        slot.setSlotId(33L);
+        slot.setSlotDate(DATE);
+        slot.setSlotHour(9);
+        slot.setValidUntil(DATE.atTime(12, 0));
+        when(slotMapper.selectById(33L)).thenReturn(slot);
 
         ReserveXProperties props = new ReserveXProperties();
-        props.getQr().setHmacKey(HMAC_KEY);
+        props.getQr().getKeys().put(props.getQr().getKeyId(), HMAC_KEY);
+        TimeSupport time = mock(TimeSupport.class);
+        when(time.now()).thenReturn(NOW);
+        when(time.toEpochSecond(any(LocalDateTime.class))).thenAnswer(invocation ->
+                invocation.<LocalDateTime>getArgument(0).atZone(ZoneId.of("Asia/Shanghai")).toEpochSecond());
+        StateLogMapper stateLogMapper = mock(StateLogMapper.class);
+        StateLog state = new StateLog();
+        state.setXid("rx-" + RNO);
+        state.setStatus(1);
+        when(stateLogMapper.selectById(state.getXid())).thenReturn(state);
+        PlatformTransactionManager txManager = mock(PlatformTransactionManager.class);
+        when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        doNothing().when(txManager).commit(any());
+        ReservationTransitionOutboxMapper outboxMapper =
+                mock(ReservationTransitionOutboxMapper.class);
+        ReservationTransitionOutboxService transitionOutbox =
+                mock(ReservationTransitionOutboxService.class);
+        IdGenerator idGenerator = mock(IdGenerator.class);
+        VerificationLogMapper verificationMapper = mock(VerificationLogMapper.class);
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        doReturn(1L).when(redis).execute(any(DefaultRedisScript.class),
+                any(List.class), any(), any(), any());
         QrService service = new QrService(
                 reservationMapper,
-                mock(VerificationLogMapper.class),
-                mock(ReservationEventMapper.class),
-                mock(StateLogMapper.class),
-                mock(AuditLogMapper.class),
-                mock(IdGenerator.class),
-                new TimeSupport(props),
+                slotMapper,
+                verificationMapper,
+                stateLogMapper,
+                outboxMapper,
+                transitionOutbox,
+                idGenerator,
+                time,
                 props,
-                mock(StringRedisTemplate.class),
-                mock(PlatformTransactionManager.class));
-        return new Fixture(service, reservationMapper, reservation);
+                redis,
+                txManager);
+        return new Fixture(service, reservationMapper, stateLogMapper, outboxMapper,
+                transitionOutbox, idGenerator, verificationMapper, redis,
+                reservation, slot, props);
     }
 
     private record Fixture(QrService service, ReservationMapper reservationMapper,
-                           Reservation reservation) {
+                           StateLogMapper stateLogMapper,
+                           ReservationTransitionOutboxMapper outboxMapper,
+                           ReservationTransitionOutboxService transitionOutbox,
+                           IdGenerator idGenerator, VerificationLogMapper verificationMapper,
+                           StringRedisTemplate redis,
+                           Reservation reservation, Slot slot, ReserveXProperties props) {
     }
 }

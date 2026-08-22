@@ -7,6 +7,7 @@ import com.reservex.entity.User;
 import com.reservex.mapper.sharding.UserMapper;
 import com.reservex.mapper.single.StuckReservationMapper;
 import com.reservex.message.ReservationCreatedMessage;
+import com.reservex.lua.LuaScripts;
 import com.reservex.service.ReservationService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
@@ -14,7 +15,6 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.time.LocalDate;
 import java.util.Map;
 import java.util.Set;
@@ -30,19 +30,22 @@ public class PendingScanner {
     private final StuckReservationMapper stuckMapper;
     private final ReserveXProperties props;
     private final TimeSupport time;
+    private final LuaScripts lua;
 
     public PendingScanner(StringRedisTemplate redis,
                           RocketMQTemplate rocketMQ,
                           UserMapper userMapper,
                           StuckReservationMapper stuckMapper,
                           ReserveXProperties props,
-                          TimeSupport time) {
+                          TimeSupport time,
+                          LuaScripts lua) {
         this.redis = redis;
         this.rocketMQ = rocketMQ;
         this.userMapper = userMapper;
         this.stuckMapper = stuckMapper;
         this.props = props;
         this.time = time;
+        this.lua = lua;
     }
 
     @Scheduled(cron = "${reservex.pending.scan-cron}")
@@ -77,6 +80,8 @@ public class PendingScanner {
             redis.opsForZSet().remove(ReservationService.PENDING_KEY, raw);
             return;
         }
+        // 兼容升级前带 TTL 的 occupy；恢复证据必须保留到成功消费或明确补偿。
+        redis.persist(occupyKey);
         int count = intValue(occupy, "reinject_count", 0);
         long userId = longValue(occupy, "user_id");
         User user = userMapper.selectById(userId);
@@ -99,11 +104,14 @@ public class PendingScanner {
                 longValue(occupy, "create_ts"), "scanner-" + rno,
                 "dup:" + slotDate + ":" + user.getIdCardHash(),
                 value(occupy, "bucket"), "slot:full:" + slotId);
+        Long attempt = lua.evalLong(LuaScripts.Script.REINJECT, java.util.List.of(occupyKey));
+        if (attempt == null || attempt == 0) {
+            redis.opsForZSet().remove(ReservationService.PENDING_KEY, raw);
+            return;
+        }
         try {
             rocketMQ.syncSend("reservation-created", message);
-            redis.opsForHash().put(occupyKey, "reinject_count", Integer.toString(count + 1));
-            redis.expire(occupyKey, Duration.ofSeconds(props.getPending().getOccupyTtlSec()));
-            log.warn("补投预约消息 rno={} count={}", rno, count + 1);
+            log.warn("补投预约消息 rno={} count={}", rno, attempt);
         } catch (RuntimeException e) {
             log.error("补投预约消息失败 rno={}", rno, e);
         }
@@ -111,6 +119,11 @@ public class PendingScanner {
 
     private void toStuck(long rno, Map<Object, Object> occupy, User user,
                          int count, String error) {
+        String occupyKey = ReservationService.occupyKey(rno);
+        Boolean persisted = redis.persist(occupyKey);
+        if (!Boolean.TRUE.equals(persisted) && !Boolean.TRUE.equals(redis.hasKey(occupyKey))) {
+            throw new IllegalStateException("卡单 occupy 已丢失 rno=" + rno);
+        }
         StuckReservation stuck = new StuckReservation();
         stuck.setReservationNo(rno);
         stuck.setSlotId(longValue(occupy, "slot_id"));
@@ -125,9 +138,7 @@ public class PendingScanner {
         stuck.setStatus(0);
         stuck.setCreateAt(time.now());
         stuckMapper.insertIgnore(stuck);
-        redis.opsForHash().put(ReservationService.occupyKey(rno), "stuck", "1");
-        redis.expire(ReservationService.occupyKey(rno),
-                Duration.ofSeconds(props.getPending().getOccupyTtlSec()));
+        redis.opsForHash().put(occupyKey, "stuck", "1");
         redis.opsForZSet().remove(ReservationService.PENDING_KEY, Long.toString(rno));
         log.error("预约转卡单 rno={} reason={}", rno, error);
     }

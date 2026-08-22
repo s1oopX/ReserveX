@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 四个 Lua 脚本的加载与执行(04 §七)。
+ * Lua 脚本的加载与执行(04 §七)。
  *
  * <p><b>用 {@code scriptLoad} 预加载 + {@code evalSha} 调用</b>,不每次传全文:
  * 抢号脚本约 2KB,峰值 2000 QPS 下每次传全文就是 4MB/s 的无谓网络开销,
@@ -41,7 +41,11 @@ public class LuaScripts {
         /** 10.3 放号初始化桶。必须在 released 0→1 CAS 成功后才调。 */
         RELEASE("lua/release.lua"),
         /** 增容。逐桶增量,只增不减。 */
-        INCR("lua/incr.lua");
+        INCR("lua/incr.lua"),
+        /** 原子标记在途预约取消。返回 1 已标记 / 0 证据缺失 / -1 非本人 / 2 已过期。 */
+        MARK_CANCEL("lua/mark_cancel.lua"),
+        /** 补投前确认占位仍存在并递增尝试次数；返回 0 表示已被消费清理。 */
+        REINJECT("lua/reinject.lua");
 
         private final String path;
 
@@ -75,7 +79,7 @@ public class LuaScripts {
      * {@code grab.lua} 的 {@code KEYS[1]} 是命中桶、{@code KEYS[2..n]} 必须是
      * <b>环形</b>借桶顺序({@code (bucket_no + i) % bucket_count}),末尾两位
      * {@code KEYS[n+1]=ratelimit:user:{userId}}、{@code KEYS[n+2]=ratelimit:slot:{slotId}}
-     * 是 D5 限流折叠进来的(保持 2 round-trip)。ARGV[15]/ARGV[16] 是 user/slot rps。
+     * 是 D5 限流折叠进来的(保持 2 round-trip)。ARGV[14]/ARGV[15] 是 user/slot rps。
      * 顺序传错不会报错,只会让借桶偏向固定几个桶 → 倾斜,而压测埋点
      * {@code stats:borrow:*} 是唯一能看出来的地方。
      *

@@ -9,6 +9,9 @@
 spring:
   application:
     name: reservex
+  web:
+    resources:
+      add-mappings: false
   main:
     banner-mode: off
   # §7.4:优雅停机。D6 五阶段消费者跨库,SIGTERM 落在阶段1↔阶段2 之间没有事务保护
@@ -47,6 +50,9 @@ spring:
 
 server:
   port: 8080
+  # Caddy is the only published edge and supplies X-Forwarded-*; resolve the
+  # original https/host before same-origin checks and absolute URL handling.
+  forward-headers-strategy: framework
   shutdown: graceful          # 默认 immediate,在途 HTTP 请求会被直接切断
   tomcat:
     threads: { max: 200, min-spare: 20 }
@@ -67,7 +73,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus,metrics,env
+        include: health,prometheus
   endpoint:
     health:
       show-details: when-authorized
@@ -79,12 +85,14 @@ management:
       application: reservex
 
 # ============================================================================
-# Sa-Token:access 无状态 + refresh 有状态(08 §4.6)
-#   access 每请求都要鉴权,若查 Redis 则抢号多一个 round-trip → 与 D4-A 冲突。
-#   无状态是硬约束,不是偏好。代价已认下:注销后 access 最长 30min 仍有效。
+# Sa-Token:JWT access + Redis token session + refresh rotation(08 §4.6)
+#   access 的 JWT 仍用于签名校验,Redis 映射用于即时 logout/改密撤销；
+#   身份证派生数据只放 token session；role/status 每次按 user_id 定向查 DB，
+#   不信任可长期陈旧的 JWT claims。
 # ============================================================================
 sa-token:
   token-name: Authorization
+  token-prefix: Bearer
   token-style: uuid
   is-concurrent: true              # 允许同账号多端
   is-share: false                  # 每次登录新 token(共享 token 下无法按端注销)
@@ -101,13 +109,19 @@ rocketmq:
   name-server: ${ROCKETMQ_NAMESRV:localhost:9876}
   producer:
     group: pg-reservex
+    access-key: ReserveXApp
+    secret-key: ${ROCKETMQ_APP_SECRET_KEY}
     send-message-timeout: 3000        # 抢号线程同步发消息,超时必须短于前端等待
     retry-times-when-send-failed: 2   # 失败也有 pending-scanner 补投(D2),不多试
+  consumer:
+    access-key: ReserveXApp
+    secret-key: ${ROCKETMQ_APP_SECRET_KEY}
 
 logging:
   level:
     root: INFO
     com.reservex: INFO
+    org.apache.rocketmq: WARN
     org.apache.shardingsphere: WARN
   pattern:
     # requestId 由 common/RequestIdFilter 放进 MDC,贯穿 HTTP 与消息(08 §6.0 Tracing)
@@ -131,18 +145,18 @@ reservex:
   datasource:
     ds0:
       url: "jdbc:mysql://${MYSQL_HOST:localhost}:3306/reservex_ds0?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
-      username: root
-      password: ${MYSQL_ROOT_PASSWORD}
+      username: reservex_app
+      password: ${MYSQL_APP_PASSWORD}
       pool: { maximum-pool-size: 20, minimum-idle: 5, connection-timeout: 3000, max-lifetime: 1500000 }
     ds1:
       url: "jdbc:mysql://${MYSQL_HOST:localhost}:3306/reservex_ds1?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
-      username: root
-      password: ${MYSQL_ROOT_PASSWORD}
+      username: reservex_app
+      password: ${MYSQL_APP_PASSWORD}
       pool: { maximum-pool-size: 20, minimum-idle: 5, connection-timeout: 3000, max-lifetime: 1500000 }
     single:
       url: "jdbc:mysql://${MYSQL_HOST:localhost}:3306/reservex_single?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
-      username: root
-      password: ${MYSQL_ROOT_PASSWORD}
+      username: reservex_app
+      password: ${MYSQL_APP_PASSWORD}
       pool: { maximum-pool-size: 30, minimum-idle: 10, connection-timeout: 3000, max-lifetime: 1500000 }
 
   quota:
@@ -154,21 +168,10 @@ reservex:
   slot:
     gen-cron: "0 30 2 * * ?"        # 每日 02:30 生成次日 slot(06 §4.0/§4.3 核心级任务)
     gen-days-ahead: 1
-    # ⚠️ 以下五项**只用于灌 02-seed.sql 的 slot_template 种子**,运行期一律读表不读这里。
-    #    代码里凡是在业务路径读 seed.* 的都是错的(03 §4.0 / §7.1 红线)
-    seed:
-      template-hours: [9, 11, 14, 16]
-      default-duration-min: 120     # valid_until = slot_date + slot_hour:00 + duration_min
-      default-capacity: 50
-      default-bucket-count: 10      # 已放号禁改(改则 hash 路由错位)
-      default-release-offset-min: -840   # 前一日 10:00 放号
 
   redis-key:
     # TTL 全部**派生**不硬编,避免"跨天场次的 key 提前消失"(04 §1.1 dup TTL bug 根因)
-    dup-ttl-mode: until-slot-date-end   # dup:{slot_date}:{hash} 活到 slot_date 23:59:59
     dup-ttl-cap-days: 7                 # 上限兜底,防远期 slot 把 key 压太久
-    slot-full-ttl-mode: until-slot-date-end
-    bucket-ttl-mode: until-slot-date-end
     meta-ttl-base-sec: 86400
     meta-ttl-jitter-sec: 300            # 05 §三 TTL 抖动
 
@@ -177,19 +180,12 @@ reservex:
     scan-cron: "*/10 * * * * ?"
     scan-page-size: 500
     reinject-max: 5              # 同一 rno 补投上限;耗尽转 stuck,**不自主 10.2a**
-    occupy-ttl-sec: 1800         # occupy TTL 30min;scanner 每轮续期
-    stuck-keep-renewing-occupy: true    # 卡单后仍续期,否则人工连"该回滚什么"都查不到
-    stuck-inspect-cron: "0 */10 * * * ?"
-    stuck-alert-after-min: 60
 
   reminder:
     ahead-min: 30                # ReminderTrigger 延时到 valid_until - 30min
 
   reconcile:
-    enabled: true
-    done-marker-ttl-sec: 300     # done:{task}:{period} 短 TTL,只挡当批内重踢
     page-size: 500
-    rate-limit-per-sec: 200
     stock-auto-fix: false        # 库存对账默认**只告警不自动改**;开启必带 reconcile:fixing:* 守卫
     crons:
       slot-gen: "0 30 2 * * ?"
@@ -201,6 +197,7 @@ reservex:
       expire: "0 * * * * ?"
       reminder: "0 */5 * * * ?"
       pending-idx: "0 */5 * * * ?"
+      transition-outbox: "*/10 * * * * ?" # 分片终态 → 单库审计重放
       orphan-route: "0 7 * * * ?"     # 孤儿 route 清理 1h
     orphan-route-min-age-min: 10      # 守卫:不删在途注册的 route(03 §八·补)
 
@@ -218,7 +215,8 @@ reservex:
     # 这是本项目唯一"照书做反而错"的地方。
     pepper: ${ID_HASH_PEPPER}
   qr:
-    hmac-key: ${QR_HMAC_KEY}     # 与 AES 数据密钥分离:同一 key 既加密身份证又签 QR,一处泄露两处失守
+    keys:
+      qr-v1: ${QR_HMAC_KEY}      # 轮换:先加 qr-v2,再改 key-id；旧 key 保留到验签窗口结束
     key-id: qr-v1                # 载荷 kid 段
     accepted-key-ids: [qr-v1]    # 轮换时旧 kid 保留在此直至窗口过
     ttl-sec: 60                  # 载荷 exp = now + 60;服务端验签窗口(不预存 nonce)
@@ -235,12 +233,17 @@ reservex:
     api-local-rps: 2000          # 本地 Guava 接口级
     user-redis-rps: 5            # Redis 用户级
     slot-redis-rps: 100          # Redis 场次级
-
-  redis:
-    degrade:                     # D7 Redis 故障时各链路的行为(05 §五)
-      grab: reject               # 抢号拒绝 —— 库存真理源不可用时不能放行
-      query: passthrough
-      verify: local-only
+    login-max-attempts: 10       # 同一规范化邮箱每窗口最多尝试次数
+    login-ip-max-attempts: 100   # 同一来源 IP 每窗口总尝试次数(NAT 下高于账号桶)
+    login-window-sec: 60
+    register-identity-max-attempts: 3  # 同一邮箱/手机号每小时尝试次数
+    register-ip-max-attempts: 20       # 同一来源 IP 每小时总注册尝试次数
+    register-window-sec: 3600
+    refresh-ip-max-attempts: 120       # 同一来源 IP 每分钟刷新尝试次数
+    refresh-window-sec: 60
+    captcha-generate-ip-max-attempts: 30
+    captcha-verify-ip-max-attempts: 120
+    captcha-ip-window-sec: 60
 
   # ---- 舱壁线程池(§7.4)-------------------------------------------------
   # ⚠️ 抢号/核销**不放异步池**:它们是同步返回的请求线程(Tomcat),舱壁体现在
@@ -269,10 +272,10 @@ reservex:
     groups:
       persistence: cg-persistence
       rollback: cg-rollback
-      reminder: cg-reminder
       timeout: cg-timeout
-      release: cg-release
-      dlq: dlq-monitor
+      dlq-persistence: cg-dlq-persistence
+      dlq-rollback: cg-dlq-rollback
+      dlq-timeout: cg-dlq-timeout
     max-reconsume-times: 16
     # persistence 是唯一的写库消费者 → 它的线程数就是 DB 写并发的上界,
     # 必须 ≤ single 池(30)且留出 route/event/occupied 的连接;20 是留余量后的值
@@ -280,8 +283,8 @@ reservex:
       persistence: { min: 20, max: 20 }
       rollback: { min: 2, max: 4 }
       timeout: { min: 4, max: 8 }
-      release: { min: 1, max: 2 }      # 放号靠选主,并发无意义
-      reminder: { min: 2, max: 4 }     # 与 executor.mail 同量级,别让邮件把池占满
+      dlq-persistence: { min: 1, max: 2 }
+      dlq-rollback: { min: 1, max: 2 }
+      dlq-timeout: { min: 1, max: 2 }
     # ⚠️ 必须 1:D6 五阶段是**单条**语义,批量消费下一条失败会把整批重投 → 已成功的被重复执行
     consume-message-batch-max-size: 1
-

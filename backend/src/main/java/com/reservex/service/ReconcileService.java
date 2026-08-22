@@ -20,9 +20,9 @@ import com.reservex.mapper.single.ReconcileLogMapper;
 import com.reservex.mapper.single.SlotBucketMapper;
 import com.reservex.mapper.single.SlotMapper;
 import com.reservex.mapper.single.StuckReservationMapper;
+import com.reservex.mapper.single.StateLogMapper;
 import com.reservex.mapper.single.VerificationLogMapper;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -38,6 +38,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /** MVP 库存对账：Redis 扣减与 DB 累计占用必须相等，默认只记录不自动改。 */
@@ -53,11 +54,12 @@ public class ReconcileService {
     private final IdCardRouteMapper idCardRouteMapper;
     private final ReconcileLogMapper reconcileMapper;
     private final StuckReservationMapper stuckMapper;
+    private final StateLogMapper stateLogMapper;
     private final VerificationLogMapper verificationMapper;
     private final StringRedisTemplate redis;
     private final IdGenerator idGenerator;
     private final TimeSupport time;
-    private final RocketMQTemplate rocketMQ;
+    private final RollbackService rollbackService;
     private final ReserveXProperties props;
 
     public ReconcileService(SlotMapper slotMapper,
@@ -66,11 +68,12 @@ public class ReconcileService {
                             IdCardRouteMapper idCardRouteMapper,
                             ReconcileLogMapper reconcileMapper,
                             StuckReservationMapper stuckMapper,
+                            StateLogMapper stateLogMapper,
                             VerificationLogMapper verificationMapper,
                             StringRedisTemplate redis,
                             IdGenerator idGenerator,
                             TimeSupport time,
-                            RocketMQTemplate rocketMQ,
+                            RollbackService rollbackService,
                             ReserveXProperties props) {
         this.slotMapper = slotMapper;
         this.bucketMapper = bucketMapper;
@@ -78,18 +81,20 @@ public class ReconcileService {
         this.idCardRouteMapper = idCardRouteMapper;
         this.reconcileMapper = reconcileMapper;
         this.stuckMapper = stuckMapper;
+        this.stateLogMapper = stateLogMapper;
         this.verificationMapper = verificationMapper;
         this.redis = redis;
         this.idGenerator = idGenerator;
         this.time = time;
-        this.rocketMQ = rocketMQ;
+        this.rollbackService = rollbackService;
         this.props = props;
     }
 
     @Scheduled(cron = "${reservex.reconcile.crons.stock:0 */5 * * * ?}")
     public void reconcileStock() {
-        reconcileDate(time.today());
-        reconcileDate(time.today().plusDays(1));
+        LocalDate today = time.today();
+        reconcileDate(today);
+        reconcileDate(today.plusDays(1));
     }
 
     /**
@@ -122,9 +127,9 @@ public class ReconcileService {
      * route 对账:id_card_route vs reservation。
      *
      * <p>扫 {@code id_card_route} 每条,查对应 {@code reservation_no} 在 reservation 表是否存在
-     * 且 status∈{0,1}(RESERVED/VERIFIED)。route 有但 reservation 不存在或已取消/过期 = 幽灵 route,
-     * 记 diff **不自动删**(区别于 {@link com.reservex.worker.OrphanRouteCleaner} 的 email/phone orphan-route,
-     * 那个是注册跨库两写失败留的孤儿,本任务对的是配额位与预约记录的对应关系)。
+     * 且身份证 hash、日期一致。取消/过期仍消耗当日配额，不是幽灵 route。
+     * 记 diff **不自动删**。{@link com.reservex.worker.OrphanRouteCleaner} 同样只检测注册跨库两写
+     * 留下的疑似孤儿;本任务对的是配额位与预约记录的对应关系。
      */
     @Scheduled(cron = "${reservex.reconcile.crons.route:0 */10 * * * ?}")
     @Async("reconcileExecutor")
@@ -153,7 +158,8 @@ public class ReconcileService {
     @Async("reconcileExecutor")
     public void reconcilePendingIndex() {
         String period = time.now().format(PERIOD);
-        Set<String> pending = redis.opsForZSet().range(ReservationService.PENDING_KEY, 0, -1);
+        long last = Math.max(0, props.getReconcile().getPageSize() - 1L);
+        Set<String> pending = redis.opsForZSet().range(ReservationService.PENDING_KEY, 0, last);
         if (pending == null || pending.isEmpty()) {
             recordPendingIdxLog(period, 0, 0);
             return;
@@ -194,6 +200,7 @@ public class ReconcileService {
     }
 
     private void reconcileDate(LocalDate date, String taskType) {
+        LocalDateTime now = time.now();
         for (Slot slot : slotMapper.selectByDate(date)) {
             if (slot.getReleased() != 1) {
                 continue;
@@ -214,6 +221,7 @@ public class ReconcileService {
             }
             int redisOccupied = slot.getCapacity() - redisRemain;
             int dbOccupied = buckets.stream().mapToInt(SlotBucket::getOccupied).sum();
+            boolean bucketMismatch = !matchesDatabaseBuckets(slot, buckets, values);
             int active = Math.toIntExact(reservationMapper.selectCount(
                     new LambdaQueryWrapper<Reservation>()
                             .eq(Reservation::getSlotId, slot.getSlotId())
@@ -222,19 +230,23 @@ public class ReconcileService {
             ReconcileLog log = new ReconcileLog();
             log.setId(idGenerator.nextId());
             log.setTaskType(taskType);
-            log.setPeriod(time.now().format(PERIOD));
+            log.setPeriod(now.format(PERIOD));
             log.setSlotId(slot.getSlotId());
             log.setRedisOccupied(redisOccupied);
             log.setDbOccupied(dbOccupied);
             log.setReservationCnt(active);
             log.setDiff(redisOccupied - dbOccupied);
-            log.setCreateAt(time.now());
+            if (bucketMismatch) {
+                log.setFixAction("bucket-mismatch");
+            }
+            log.setCreateAt(now);
             reconcileMapper.insertIgnore(log);
         }
     }
 
     /** reconcile-b:反向记 diff = dbOccupied - redisOccupied。见 {@link #reconcileB}。 */
     private void reconcileDateReverse(LocalDate date, String taskType) {
+        LocalDateTime now = time.now();
         for (Slot slot : slotMapper.selectByDate(date)) {
             if (slot.getReleased() != 1) {
                 continue;
@@ -255,6 +267,7 @@ public class ReconcileService {
             }
             int redisOccupied = slot.getCapacity() - redisRemain;
             int dbOccupied = buckets.stream().mapToInt(SlotBucket::getOccupied).sum();
+            boolean bucketMismatch = !matchesDatabaseBuckets(slot, buckets, values);
             int active = Math.toIntExact(reservationMapper.selectCount(
                     new LambdaQueryWrapper<Reservation>()
                             .eq(Reservation::getSlotId, slot.getSlotId())
@@ -263,36 +276,74 @@ public class ReconcileService {
             ReconcileLog log = new ReconcileLog();
             log.setId(idGenerator.nextId());
             log.setTaskType(taskType);
-            log.setPeriod(time.now().format(PERIOD));
+            log.setPeriod(now.format(PERIOD));
             log.setSlotId(slot.getSlotId());
             log.setRedisOccupied(redisOccupied);
             log.setDbOccupied(dbOccupied);
             log.setReservationCnt(active);
             log.setDiff(dbOccupied - redisOccupied);
-            log.setCreateAt(time.now());
+            if (bucketMismatch) {
+                log.setFixAction("bucket-mismatch");
+            }
+            log.setCreateAt(now);
             reconcileMapper.insertIgnore(log);
         }
     }
 
     /**
-     * route 对账核心:扫指定日 id_card_route,查对应 reservation 是否存在且有效。
+     * route 对账核心:扫指定日 id_card_route,查对应 reservation 是否存在且字段一致。
      *
      * <p>⚠️ id_card_route 的复合主键含 {@code slot_date},按 slot_date=? 查命中本表
      * (单库表,不分片)。reservation 查按 reservation_no(主键,广播两库各一次主键查询,快)。
      */
     private int scanRouteGhosts(LocalDate date) {
         List<IdCardRoute> routes = idCardRouteMapper.selectBySlotDate(date);
-        if (routes.isEmpty()) {
-            return 0;
-        }
         int ghosts = 0;
         for (IdCardRoute route : routes) {
             Reservation r = reservationMapper.selectById(route.getReservationNo());
-            if (r == null || (r.getStatus() != 0 && r.getStatus() != 1)) {
+            if (r == null || !Objects.equals(route.getIdCardHash(), r.getIdCardHash())
+                    || !Objects.equals(route.getSlotDate(), r.getSlotDate())) {
+                ghosts++;
+            }
+        }
+        // 反向检查 reservation -> route，覆盖“预约已落库但阶段二在 route 写入前崩溃”。
+        // 这是低频对账路径，广播查询和逐行主键查可接受；不能只做 route -> reservation。
+        List<Reservation> reservations = reservationMapper.selectList(new LambdaQueryWrapper<Reservation>()
+                .eq(Reservation::getSlotDate, date));
+        for (Reservation reservation : reservations) {
+            Long owner = idCardRouteMapper.selectReservationNo(
+                    reservation.getIdCardHash(), reservation.getSlotDate());
+            if (!Objects.equals(owner, reservation.getReservationNo())) {
                 ghosts++;
             }
         }
         return ghosts;
+    }
+
+    private static boolean matchesDatabaseBuckets(Slot slot, List<SlotBucket> buckets,
+                                                   List<String> values) {
+        if (buckets.size() != slot.getBucketCount() || values == null
+                || values.size() != slot.getBucketCount()) {
+            return false;
+        }
+        for (int bucketNo = 0; bucketNo < slot.getBucketCount(); bucketNo++) {
+            final int expectedBucketNo = bucketNo;
+            SlotBucket bucket = buckets.stream()
+                    .filter(candidate -> Integer.valueOf(expectedBucketNo).equals(candidate.getBucketNo()))
+                    .findFirst().orElse(null);
+            String value = values.get(bucketNo);
+            if (bucket == null || value == null) {
+                return false;
+            }
+            try {
+                if (Integer.parseInt(value) != bucket.getTotal() - bucket.getOccupied()) {
+                    return false;
+                }
+            } catch (RuntimeException e) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void recordRouteLog(String period, LocalDate date, int ghosts) {
@@ -344,47 +395,10 @@ public class ReconcileService {
         long verified = reservationMapper.selectCount(new LambdaQueryWrapper<Reservation>()
                 .eq(Reservation::getSlotDate, time.today())
                 .eq(Reservation::getStatus, 1));
-        long diff = reconcileMapper.selectCount(new LambdaQueryWrapper<ReconcileLog>()
-                .ne(ReconcileLog::getDiff, 0));
+        long diff = reconcileMapper.countCurrentWithDiff();
         long stuck = stuckMapper.selectCount(new LambdaQueryWrapper<StuckReservation>()
-                .eq(StuckReservation::getStatus, 0));
+                .in(StuckReservation::getStatus, 0, 4));
         return new Dashboard(slots.size(), reservations, verified, diff, stuck);
-    }
-
-    /**
-     * 管理员全园预约查询(广播两库归并 + 脱敏)。
-     *
-     * <p>⚠️ 按 reservation_no(主键,广播)或 slot_date(广播)或 status 查;
-     * **不按 user_id**(那是用户的分片键,管理员视角无权知道用户落在哪库)。
-     * 广播两库各一次查询后归并,今日预约量级 < 200 可接受。
-     *
-     * <p>不暴露 idCardHash 明文关联,只返冗余的 idCardMasked(列表逐行解密太贵)。
-     *
-     * @param rno       预约号(可选,精确查单条)
-     * @param slotDate  场次日期(可选,按日筛)
-     * @param statusStr 状态名(可选:CONFIRMED/VERIFIED/CANCELLED/EXPIRED)
-     */
-    public List<ReservationView> listAdminReservations(Long rno, LocalDate slotDate, String statusStr) {
-        LambdaQueryWrapper<Reservation> qw = new LambdaQueryWrapper<>();
-        if (rno != null) {
-            qw.eq(Reservation::getReservationNo, rno);
-        }
-        if (slotDate != null) {
-            qw.eq(Reservation::getSlotDate, slotDate);
-        }
-        if (statusStr != null && !statusStr.isBlank()) {
-            Integer code = statusToCode(statusStr);
-            if (code != null) {
-                qw.eq(Reservation::getStatus, code);
-            }
-        }
-        qw.orderByDesc(Reservation::getCreateAt).last("LIMIT 500");
-        List<Reservation> rows = reservationMapper.selectList(qw);
-        List<ReservationView> result = new ArrayList<>(rows.size());
-        for (Reservation row : rows) {
-            result.add(toAdminView(row));
-        }
-        return result;
     }
 
     /**
@@ -419,39 +433,6 @@ public class ReconcileService {
                 successToday, attemptsToday);
     }
 
-    private static Integer statusToCode(String name) {
-        return switch (name.toUpperCase()) {
-            case "CONFIRMED" -> 0;
-            case "VERIFIED" -> 1;
-            case "CANCELLED" -> 2;
-            case "EXPIRED" -> 3;
-            default -> null;
-        };
-    }
-
-    private static String codeToStatus(int code) {
-        return switch (code) {
-            case 0 -> "CONFIRMED";
-            case 1 -> "VERIFIED";
-            case 2 -> "CANCELLED";
-            case 3 -> "EXPIRED";
-            default -> "UNKNOWN";
-        };
-    }
-
-    private static ReservationView toAdminView(Reservation row) {
-        return new ReservationView(row.getReservationNo(), row.getUserId(), row.getSlotId(),
-                row.getSlotDate(), codeToStatus(row.getStatus()), row.getVersion(),
-                row.getCreateAt(), row.getVerifiedAt(), row.getIdCardMasked());
-    }
-
-    /** 管理端预约视图:比用户视图多 userId(管理端需溯源用户)。 */
-    public record ReservationView(Long reservationNo, Long userId, Long slotId,
-                                  LocalDate slotDate, String status, Integer version,
-                                  LocalDateTime createAt, LocalDateTime verifyTime,
-                                  String idCardMasked) {
-    }
-
     public record VerifyStatsView(long confirmed, long verified, long cancelled, long expired,
                                   long successToday, long attemptsToday) {
     }
@@ -459,8 +440,8 @@ public class ReconcileService {
     /**
      * 对账中心人工处置。
      *
-     * <p><b>stuck</b>:rollback 发 CompensateRollbackMessage(RollbackConsumer 调
-     * compensate.lua 幂等回滚),resolve status=2;ignore 仅 resolve status=3。
+     * <p><b>stuck</b>:rollback 同步调用 RollbackService 的 compensate.lua 幂等回滚,
+     * 确认真实回补后才 resolve status=2。不能用“忽略”跳过业务收口。
      * stuck 行的 bucketKey/dupKey/slotFullKey 由 PendingScanner.toStuck 写全。
      *
      * <p><b>diff</b>:fix 必须校验 stockAutoFix=true(08 §7.1 红线),且只能 Redis 余量
@@ -478,34 +459,119 @@ public class ReconcileService {
         };
     }
 
+    public StuckReservation resolveStuck(long reservationNo, String targetStatus, long resolverId) {
+        String action = switch (targetStatus) {
+            case "ROLLED_BACK" -> "rollback";
+            default -> throw new BizException(ErrorCode.BAD_REQUEST, "不支持的卡单目标状态");
+        };
+        handleStuckAction(reservationNo, action, resolverId);
+        StuckReservation resolved = stuckMapper.selectById(reservationNo);
+        if (resolved == null) {
+            throw BizException.of(ErrorCode.RESERVATION_NOT_FOUND);
+        }
+        return resolved;
+    }
+
     private int handleStuckAction(long rno, String action, long resolverId) {
         return switch (action) {
-            case "rollback" -> {
-                StuckReservation stuck = stuckMapper.selectById(rno);
-                if (stuck == null) {
-                    throw BizException.of(ErrorCode.RESERVATION_NOT_FOUND);
-                }
-                if (stuck.getBucketKey() == null || stuck.getDupKey() == null) {
-                    throw new BizException(ErrorCode.BAD_REQUEST,
-                            "卡单缺少回滚参数(bucket/dup key),occupy 可能已过期,无法自动回滚");
-                }
-                CompensateRollbackMessage msg = new CompensateRollbackMessage(
-                        "manual-rollback-" + rno, rno, stuck.getDupKey(),
-                        stuck.getBucketKey(), "slot:full:" + stuck.getSlotId(), "MANUAL_ROLLBACK",
-                        "admin-action-" + rno);
-                rocketMQ.syncSend("compensate-rollback", msg);
-                int n = stuckMapper.resolve(rno, 2, resolverId, time.now());
-                log.warn("人工回滚卡单 rno={} resolved={}", rno, n);
-                yield n;
-            }
-            case "ignore" -> {
-                int n = stuckMapper.resolve(rno, 3, resolverId, time.now());
-                log.info("人工忽略卡单 rno={} resolved={}", rno, n);
-                yield n;
-            }
+            case "rollback" -> rollbackStuck(rno, resolverId);
             default -> throw new BizException(ErrorCode.BAD_REQUEST,
-                    "未知 stuck 处置动作:" + action + ",支持 rollback / ignore");
+                    "未知 stuck 处置动作:" + action + ",仅支持 rollback");
         };
+    }
+
+    private int rollbackStuck(long rno, long resolverId) {
+        StuckReservation stuck = stuckMapper.selectById(rno);
+        if (stuck == null) {
+            throw BizException.of(ErrorCode.RESERVATION_NOT_FOUND);
+        }
+        if (stuck.getBucketKey() == null || stuck.getDupKey() == null) {
+            throw new BizException(ErrorCode.STATE_CONFLICT,
+                    "卡单缺少回滚参数(bucket/dup key),occupy 可能已过期,无法自动回滚");
+        }
+        int claimed = stuckMapper.transition(rno, 0, 4, resolverId, time.now());
+        if (claimed == 0) {
+            stuck = stuckMapper.selectById(rno);
+            if (stuck == null || stuck.getStatus() != 4) {
+                throw new BizException(ErrorCode.STATE_CONFLICT, "卡单已被其他人员处理");
+            }
+        }
+
+        String xid = "rx-" + rno;
+        String occupyKey = ReservationService.occupyKey(rno);
+        boolean rollbackPending = "1".equals(String.valueOf(
+                redis.opsForHash().get(occupyKey, "rollback_pending")));
+        boolean alreadyCompensated = Boolean.TRUE.equals(
+                redis.hasKey(RollbackService.doneKey(rno)));
+        Reservation reservation = reservationMapper.selectById(rno);
+        if (reservation != null && !rollbackPending && !alreadyCompensated) {
+            releaseRollbackClaim(rno, resolverId, claimed);
+            throw new BizException(ErrorCode.STATE_CONFLICT,
+                    "预约已完成持久化，缺少明确回滚标记，拒绝回补库存");
+        }
+        if (reservation != null && reservation.getStatus() != 2
+                && reservation.getStatus() != 3) {
+            releaseRollbackClaim(rno, resolverId, claimed);
+            throw new BizException(ErrorCode.STATE_CONFLICT,
+                    "预约已核销或正在变更，拒绝回补库存");
+        }
+        CompensateRollbackMessage msg = new CompensateRollbackMessage(
+                "manual-rollback-" + rno, rno, stuck.getDupKey(),
+                stuck.getBucketKey(), "slot:full:" + stuck.getSlotId(), "MANUAL_ROLLBACK",
+                "admin-action-" + rno);
+        stateLogMapper.insertRollbackClaim(xid, Long.toString(rno));
+        var rollbackState = stateLogMapper.selectById(xid);
+        if (rollbackState == null) {
+            releaseRollbackClaim(rno, resolverId, claimed);
+            throw new IllegalStateException("rollback state missing after claim xid=" + xid);
+        }
+        if (rollbackState.getStatus() == 3) {
+            if (Boolean.TRUE.equals(redis.hasKey(RollbackService.doneKey(rno)))) {
+                return finishRollback(rno, resolverId);
+            }
+            if (stateLogMapper.promoteRollbackClaim(xid) != 1) {
+                throw new BizException(ErrorCode.STATE_CONFLICT, "回滚仲裁状态已变化，请重试");
+            }
+            rollbackState = stateLogMapper.selectById(xid);
+        }
+        if (rollbackState.getStatus() != 4) {
+            releaseRollbackClaim(rno, resolverId, claimed);
+            throw new BizException(ErrorCode.STATE_CONFLICT,
+                    "预约落库事务已开始，拒绝并发回补库存");
+        }
+
+        // claim 后阻止 persistence-consumer 在 consumed_event 分支清理 occupy。
+        redis.opsForHash().put(occupyKey, "rollback_pending", "1");
+        if (!rollbackService.compensate(msg)) {
+            throw new BizException(ErrorCode.STATE_CONFLICT,
+                    "卡单回滚未执行:没有可证明的 occupy 或 done marker");
+        }
+        var completed = stateLogMapper.selectById(xid);
+        if (completed == null || completed.getStatus() != 3) {
+            throw new BizException(ErrorCode.SERVICE_DEGRADED, "库存已处理但回滚日志未落下，请重试");
+        }
+        int n = finishRollback(rno, resolverId);
+        log.warn("人工回滚卡单 rno={} resolved={}", rno, n);
+        return n;
+    }
+
+    private int finishRollback(long rno, long resolverId) {
+        int n = stuckMapper.transition(rno, 4, 2, resolverId, time.now());
+        if (n == 0) {
+            StuckReservation latest = stuckMapper.selectById(rno);
+            if (latest != null && latest.getStatus() == 2) {
+                return 0;
+            }
+            throw new BizException(ErrorCode.STATE_CONFLICT, "卡单已被其他人员处理");
+        }
+        return n;
+    }
+
+    private void releaseRollbackClaim(long rno, long resolverId, int claimed) {
+        if (claimed != 1) {
+            return;
+        }
+        stuckMapper.transition(rno, 4, 0, resolverId, time.now());
     }
 
     private int handleDiffAction(long reconcileLogId, String action) {
@@ -527,12 +593,12 @@ public class ReconcileService {
         // diff = redisOccupied - dbOccupied > 0:Redis 少了(桶余量被多扣),INCRBY 补;
         // diff < 0:Redis 余量比 DB 多=疑似超卖,不能自动减 DB occupied,只告警。
         if (logEntry.getDiff() > 0) {
-            // 只记录处置意向,实际 INCRBY 需按桶精确补,这里仅告警占位(M1 只增不减的谨慎面)
             log.info("diff fix 告警 slotId={} diff={} 待人工按桶补齐 Redis 余量", logEntry.getSlotId(), logEntry.getDiff());
         } else {
             log.warn("diff 为负(Redis 余量 > DB 该有值)疑似超卖 slotId={} diff={},不自动改", logEntry.getSlotId(), logEntry.getDiff());
         }
-        return 1;
+        // 没有逐桶真值就不能把“记录了意向”报告成“已修复”。
+        throw new BizException(ErrorCode.BAD_REQUEST, "库存差异未自动修复，请按桶人工核对");
     }
 
     public record Dashboard(int todaySlots, long todayReservations, long todayVerified,

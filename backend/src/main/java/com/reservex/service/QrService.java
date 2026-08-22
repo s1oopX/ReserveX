@@ -6,19 +6,21 @@ import com.reservex.common.ErrorCode;
 import com.reservex.common.RequestIdFilter;
 import com.reservex.common.TimeSupport;
 import com.reservex.config.ReserveXProperties;
-import com.reservex.entity.AuditLog;
 import com.reservex.entity.Reservation;
-import com.reservex.entity.ReservationEvent;
+import com.reservex.entity.ReservationTransitionOutbox;
+import com.reservex.entity.Slot;
+import com.reservex.entity.StateLog;
 import com.reservex.entity.VerificationLog;
 import com.reservex.id.IdGenerator;
 import com.reservex.mapper.sharding.ReservationMapper;
-import com.reservex.mapper.single.AuditLogMapper;
-import com.reservex.mapper.single.ReservationEventMapper;
+import com.reservex.mapper.single.SlotMapper;
 import com.reservex.mapper.single.StateLogMapper;
 import com.reservex.mapper.single.VerificationLogMapper;
+import com.reservex.mapper.sharding.ReservationTransitionOutboxMapper;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -28,7 +30,6 @@ import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.HexFormat;
@@ -38,38 +39,53 @@ import java.util.List;
 @Service
 public class QrService {
 
+    private static final int MANUAL_STAFF_ATTEMPTS = 5;
+    private static final int MANUAL_RESERVATION_ATTEMPTS = 20;
+    private static final int MANUAL_ATTEMPT_WINDOW_SEC = 600;
+    private static final DefaultRedisScript<Long> CHECK_MANUAL_RATE = new DefaultRedisScript<>("""
+            local staff = redis.call('INCR', KEYS[1])
+            if staff == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+            local reservation = redis.call('INCR', KEYS[2])
+            if reservation == 1 then redis.call('EXPIRE', KEYS[2], ARGV[1]) end
+            if staff > tonumber(ARGV[2]) or reservation > tonumber(ARGV[3]) then return 0 end
+            return 1
+            """, Long.class);
+
     private final ReservationMapper reservationMapper;
+    private final SlotMapper slotMapper;
     private final VerificationLogMapper verificationMapper;
-    private final ReservationEventMapper eventMapper;
     private final StateLogMapper stateLogMapper;
-    private final AuditLogMapper auditMapper;
+    private final ReservationTransitionOutboxMapper outboxMapper;
+    private final ReservationTransitionOutboxService transitionOutbox;
     private final IdGenerator idGenerator;
     private final TimeSupport time;
     private final ReserveXProperties props;
     private final StringRedisTemplate redis;
-    private final TransactionTemplate singleTx;
+    private final TransactionTemplate shardingTx;
     private final SecureRandom random = new SecureRandom();
 
     public QrService(ReservationMapper reservationMapper,
+                     SlotMapper slotMapper,
                      VerificationLogMapper verificationMapper,
-                     ReservationEventMapper eventMapper,
                      StateLogMapper stateLogMapper,
-                     AuditLogMapper auditMapper,
+                     ReservationTransitionOutboxMapper outboxMapper,
+                     ReservationTransitionOutboxService transitionOutbox,
                      IdGenerator idGenerator,
                      TimeSupport time,
                      ReserveXProperties props,
                      StringRedisTemplate redis,
-                     @Qualifier("singleTxManager") PlatformTransactionManager txManager) {
+                     @Qualifier("shardingTxManager") PlatformTransactionManager txManager) {
         this.reservationMapper = reservationMapper;
+        this.slotMapper = slotMapper;
         this.verificationMapper = verificationMapper;
-        this.eventMapper = eventMapper;
         this.stateLogMapper = stateLogMapper;
-        this.auditMapper = auditMapper;
+        this.outboxMapper = outboxMapper;
+        this.transitionOutbox = transitionOutbox;
         this.idGenerator = idGenerator;
         this.time = time;
         this.props = props;
         this.redis = redis;
-        this.singleTx = new TransactionTemplate(txManager);
+        this.shardingTx = new TransactionTemplate(txManager);
     }
 
     public QrView issue(long userId, long rno) {
@@ -78,40 +94,38 @@ public class QrService {
             Object occupyUser = redis.opsForHash().get(ReservationService.occupyKey(rno), "user_id");
             if (occupyUser != null) {
                 if (!Long.toString(userId).equals(occupyUser.toString())) {
-                    throw BizException.of(ErrorCode.FORBIDDEN);
+                    throw BizException.of(ErrorCode.RESERVATION_NOT_FOUND);
                 }
                 throw BizException.of(ErrorCode.RESERVATION_CONFIRMING);
-            }
-            Reservation other = reservationMapper.selectById(rno);
-            if (other != null) {
-                throw BizException.of(ErrorCode.FORBIDDEN);
             }
             throw BizException.of(ErrorCode.RESERVATION_NOT_FOUND);
         }
         requireReservable(reservation.getStatus());
+        requirePersistenceComplete(reservation);
+        LocalDateTime now = time.now();
+        requireActiveWindow(reservation, now);
 
-        long exp = Instant.now().getEpochSecond() + props.getQr().getTtlSec();
+        long exp = time.toEpochSecond(now) + props.getQr().getTtlSec();
         byte[] nonceBytes = new byte[16];
         random.nextBytes(nonceBytes);
         String nonce = HexFormat.of().formatHex(nonceBytes);
         String kid = props.getQr().getKeyId();
         String unsigned = "v1|" + kid + "|" + rno + "|" + exp + "|" + nonce;
-        String payload = "v1." + kid + "." + rno + "." + exp + "." + nonce + "." + sign(unsigned);
+        String payload = "v1." + kid + "." + rno + "." + exp + "." + nonce + "." + sign(unsigned, kid);
         return new QrView(payload, exp);
     }
 
     public VerifyOutcome verifyScan(long staffId, String payload) {
         ParsedQr qr = parse(payload);
-        if (!props.getQr().getAcceptedKeyIds().contains(qr.kid())
-                || !props.getQr().getKeyId().equals(qr.kid())) {
+        if (!props.getQr().getAcceptedKeyIds().contains(qr.kid())) {
             throw BizException.of(ErrorCode.QR_INVALID);
         }
         String unsigned = "v1|" + qr.kid() + "|" + qr.rno() + "|" + qr.exp() + "|" + qr.nonce();
-        byte[] expected = sign(unsigned).getBytes(StandardCharsets.US_ASCII);
+        byte[] expected = sign(unsigned, qr.kid()).getBytes(StandardCharsets.US_ASCII);
         if (!MessageDigest.isEqual(expected, qr.signature().getBytes(StandardCharsets.US_ASCII))) {
             throw BizException.of(ErrorCode.QR_INVALID);
         }
-        if (qr.exp() < Instant.now().getEpochSecond()) {
+        if (qr.exp() < time.toEpochSecond(time.now())) {
             throw BizException.of(ErrorCode.QR_EXPIRED);
         }
         Reservation reservation = reservationMapper.selectById(qr.rno());
@@ -132,10 +146,32 @@ public class QrService {
             }
             throw BizException.of(ErrorCode.RESERVATION_NOT_FOUND);
         }
-        if (!reservation.getIdCardMasked().equals(maskedConfirm)) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "脱敏证件号不匹配");
+        requireManualAttemptAllowed(staffId, rno);
+        if (maskedConfirm == null || !maskedConfirm.matches("[0-9]{3}[0-9Xx]")) {
+            recordAttempt(rno, staffId, 1, null, 4);
+            throw new BizException(ErrorCode.BAD_REQUEST, "证件号末四位格式不正确");
+        }
+        String stored = reservation.getIdCardMasked();
+        if (stored == null || stored.length() < 4
+                || !stored.regionMatches(true, stored.length() - 4,
+                maskedConfirm, 0, 4)) {
+            recordAttempt(rno, staffId, 1, null, 4);
+            throw new BizException(ErrorCode.BAD_REQUEST, "证件号末四位不匹配");
         }
         return verify(staffId, reservation, 1, null, true);
+    }
+
+    private void requireManualAttemptAllowed(long staffId, long rno) {
+        String slot = "{" + rno + "}";
+        Long allowed = redis.execute(CHECK_MANUAL_RATE, List.of(
+                        "ratelimit:manual-verify:" + slot + ":staff:" + staffId,
+                        "ratelimit:manual-verify:" + slot + ":all"),
+                Integer.toString(MANUAL_ATTEMPT_WINDOW_SEC),
+                Integer.toString(MANUAL_STAFF_ATTEMPTS),
+                Integer.toString(MANUAL_RESERVATION_ATTEMPTS));
+        if (!Long.valueOf(1L).equals(allowed)) {
+            throw BizException.of(ErrorCode.RATE_LIMITED);
+        }
     }
 
     private VerifyOutcome verify(long staffId, Reservation reservation, int method,
@@ -153,8 +189,19 @@ public class QrService {
             throw BizException.of(ErrorCode.ALREADY_EXPIRED);
         }
 
+        requirePersistenceComplete(reservation);
         LocalDateTime now = time.now();
-        if (reservationMapper.verifyByNo(reservation.getReservationNo(), reservation.getVersion(), now) != 1) {
+        requireActiveWindow(reservation, now);
+        ReservationTransitionOutbox outbox = transition(reservation, staffId, method, nonce, manual, now);
+        Boolean committed = shardingTx.execute(status -> {
+            if (reservationMapper.verifyByNo(reservation.getUserId(),
+                    reservation.getReservationNo(), reservation.getVersion(), now) != 1) {
+                return false;
+            }
+            outboxMapper.insert(outbox);
+            return true;
+        });
+        if (!Boolean.TRUE.equals(committed)) {
             Reservation latest = reservationMapper.selectById(reservation.getReservationNo());
             if (latest == null) {
                 if (Boolean.TRUE.equals(redis.hasKey(
@@ -165,16 +212,7 @@ public class QrService {
             }
             return verify(staffId, latest, method, nonce, manual);
         }
-        singleTx.executeWithoutResult(status -> {
-            stateLogMapper.confirm("rx-" + reservation.getReservationNo());
-            VerificationLog log = verification(reservation.getReservationNo(), staffId,
-                    method, nonce, 0, now);
-            verificationMapper.insertSuccess(log);
-            eventMapper.insertIgnore(verifiedEvent(reservation.getReservationNo(), staffId, now));
-            if (manual) {
-                auditMapper.insert(manualAudit(reservation.getReservationNo(), staffId, now));
-            }
-        });
+        transitionOutbox.tryPublish(outbox);
         return new VerifyOutcome(false,
                 new VerifyView(reservation.getReservationNo(), "VERIFIED", now, staffId));
     }
@@ -204,32 +242,25 @@ public class QrService {
         return log;
     }
 
-    private ReservationEvent verifiedEvent(long rno, long staffId, LocalDateTime now) {
-        ReservationEvent event = new ReservationEvent();
-        event.setEventId("verified-" + rno);
-        event.setReservationNo(rno);
-        event.setEventType("VERIFIED");
-        event.setFromStatus(0);
-        event.setToStatus(1);
-        event.setOperatorType("STAFF");
-        event.setOperatorId(staffId);
-        event.setRequestId(requestId("verified-" + rno));
-        event.setEventTime(now);
-        return event;
-    }
-
-    private AuditLog manualAudit(long rno, long staffId, LocalDateTime now) {
-        AuditLog audit = new AuditLog();
-        audit.setId(idGenerator.nextId());
-        audit.setOperatorType("STAFF");
-        audit.setOperatorId(staffId);
-        audit.setAction("MANUAL_VERIFY");
-        audit.setTargetType("RESERVATION");
-        audit.setTargetId(rno);
-        audit.setAfter("{\"status\":\"VERIFIED\"}");
-        audit.setRequestId(requestId("manual-verify-" + rno));
-        audit.setCreateAt(now);
-        return audit;
+    private ReservationTransitionOutbox transition(Reservation reservation, long staffId,
+                                                   int method, String nonce, boolean manual,
+                                                   LocalDateTime now) {
+        ReservationTransitionOutbox outbox = new ReservationTransitionOutbox();
+        outbox.setTransitionId("verified-" + reservation.getReservationNo());
+        outbox.setUserId(reservation.getUserId());
+        outbox.setReservationNo(reservation.getReservationNo());
+        outbox.setEventType("VERIFIED");
+        outbox.setOperatorType("STAFF");
+        outbox.setOperatorId(staffId);
+        outbox.setMethod(method);
+        outbox.setQrNonce(nonce);
+        outbox.setManual(manual);
+        outbox.setVerificationId(idGenerator.nextId());
+        outbox.setAuditId(manual ? idGenerator.nextId() : null);
+        outbox.setRequestId(requestId("verified-" + reservation.getReservationNo()));
+        outbox.setEventTime(now);
+        outbox.setCreateAt(now);
+        return outbox;
     }
 
     private Reservation findOwn(long userId, long rno) {
@@ -245,6 +276,27 @@ public class QrService {
             case 2 -> throw BizException.of(ErrorCode.ALREADY_CANCELLED);
             case 3 -> throw BizException.of(ErrorCode.ALREADY_EXPIRED);
             default -> throw BizException.of(ErrorCode.BAD_REQUEST);
+        }
+    }
+
+    private void requireActiveWindow(Reservation reservation, LocalDateTime now) {
+        Slot slot = slotMapper.selectById(reservation.getSlotId());
+        if (slot == null) {
+            throw BizException.of(ErrorCode.SLOT_NOT_FOUND);
+        }
+        LocalDateTime startsAt = slot.getSlotDate().atTime(slot.getSlotHour(), 0);
+        if (now.isBefore(startsAt)) {
+            throw BizException.of(ErrorCode.RESERVATION_NOT_STARTED);
+        }
+        if (now.isAfter(reservation.getValidUntil())) {
+            throw BizException.of(ErrorCode.ALREADY_EXPIRED);
+        }
+    }
+
+    private void requirePersistenceComplete(Reservation reservation) {
+        StateLog state = stateLogMapper.selectById("rx-" + reservation.getReservationNo());
+        if (state == null || state.getStatus() != 1) {
+            throw BizException.of(ErrorCode.RESERVATION_CONFIRMING);
         }
     }
 
@@ -264,10 +316,10 @@ public class QrService {
         }
     }
 
-    private String sign(String content) {
+    private String sign(String content, String keyId) {
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(props.getQr().getHmacKey().getBytes(StandardCharsets.UTF_8),
+            mac.init(new SecretKeySpec(props.getQr().getKeys().get(keyId).getBytes(StandardCharsets.UTF_8),
                     "HmacSHA256"));
             return Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(mac.doFinal(content.getBytes(StandardCharsets.UTF_8)));

@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS `user` (
   `id_card_masked`     VARCHAR(32)    NOT NULL,                  -- 脱敏展示;注册时从明文算好,不由密文派生
   `role`               VARCHAR(16)    NOT NULL DEFAULT 'USER',   -- 注册接口写死 USER;ADMIN 只能由 seed/引导产生
   `status`             TINYINT        NOT NULL DEFAULT 0,        -- 0 正常 1 封禁
+  `version`            INT            NOT NULL DEFAULT 0,        -- STAFF 状态条件更新的强 ETag
+  `must_change_password` TINYINT      NOT NULL DEFAULT 0,        -- 1 首次登录只能改密;成功改密原子清零
   `create_at`          DATETIME       NOT NULL,
   `update_at`          DATETIME       NOT NULL,
   PRIMARY KEY (`user_id`),
@@ -50,5 +52,28 @@ CREATE TABLE IF NOT EXISTS `reservation` (
   PRIMARY KEY (`reservation_no`),
   KEY `idx_user` (`user_id`),
   KEY `idx_slot` (`slot_id`, `status`),
-  KEY `idx_date_status` (`slot_date`, `status`)
+  KEY `idx_date_status` (`slot_date`, `status`),
+  KEY `idx_status_valid_until` (`status`, `valid_until`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='预约(分库,与 user 绑定)';
+
+-- 分片状态成功后交给单库流水的可靠 outbox。与 reservation 同库同分片键，
+-- 单库不可用时保留，后台可重复投递；transition_id 是确定性事件 id，天然幂等。
+CREATE TABLE IF NOT EXISTS `reservation_transition_outbox` (
+  `transition_id`  VARCHAR(64) NOT NULL,
+  `user_id`        BIGINT      NOT NULL,
+  `reservation_no` BIGINT      NOT NULL,
+  `event_type`     VARCHAR(32) NOT NULL,
+  `operator_type`  VARCHAR(16) NOT NULL,
+  `operator_id`    BIGINT      NULL,
+  `method`         TINYINT     NULL,
+  `qr_nonce`       VARCHAR(64) NULL,
+  `manual`         TINYINT     NOT NULL DEFAULT 0,
+  `verification_id` BIGINT     NULL,
+  `audit_id`       BIGINT      NULL,
+  `request_id`     VARCHAR(64) NOT NULL,
+  `event_time`     DATETIME    NOT NULL,
+  `create_at`      DATETIME    NOT NULL,
+  PRIMARY KEY (`transition_id`),
+  KEY `idx_outbox_user` (`user_id`, `create_at`),
+  UNIQUE KEY `uk_outbox_reservation` (`reservation_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='预约终态流水 outbox';

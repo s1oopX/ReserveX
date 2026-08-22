@@ -2,13 +2,52 @@ package com.reservex.service;
 
 import com.reservex.entity.Slot;
 import com.reservex.entity.SlotBucket;
+import com.reservex.entity.AuditLog;
+import com.reservex.common.TimeSupport;
+import com.reservex.config.ReserveXProperties;
+import com.reservex.id.IdGenerator;
+import com.reservex.lua.LuaScripts;
+import com.reservex.mapper.single.AuditLogMapper;
+import com.reservex.mapper.single.SlotBucketMapper;
+import com.reservex.mapper.single.SlotMapper;
+import com.reservex.mapper.single.SlotTemplateMapper;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class SlotServiceTest {
+
+    @Test
+    void templateCannotOutliveItsRedisInventoryDay() {
+        assertThatThrownBy(() -> SlotTemplateAdminService.validate(23, 120, 50, 10, -60))
+                .isInstanceOf(com.reservex.common.BizException.class);
+    }
+
+    @Test
+    void templateBoundsPreventPersistentGenerationOom() {
+        assertThatThrownBy(() -> SlotTemplateAdminService.validate(9, 120, 100_001, 10, -60))
+                .isInstanceOf(com.reservex.common.BizException.class);
+        assertThatThrownBy(() -> SlotTemplateAdminService.validate(9, 120, 2_000, 1_001, -60))
+                .isInstanceOf(com.reservex.common.BizException.class);
+        assertThatThrownBy(() -> SlotTemplateAdminService.validate(9, 120, 50, 10, -1_441))
+                .isInstanceOf(com.reservex.common.BizException.class);
+    }
 
     @Test
     void bucketSplitPreservesCapacityAndRemainderOrder() {
@@ -79,5 +118,126 @@ class SlotServiceTest {
                 assertThat(combined).as("后 %d 桶(splitBuckets base + splitDelta base)", bucketCount - 5).isEqualTo(6);
             }
         }
+    }
+
+    @Test
+    void increaseCapacityRollsBackWhenAnyBucketIsMissing() {
+        SlotMapper slots = mock(SlotMapper.class);
+        SlotBucketMapper buckets = mock(SlotBucketMapper.class);
+        LuaScripts lua = mock(LuaScripts.class);
+        RedissonClient redisson = mock(RedissonClient.class);
+        RLock lock = mock(RLock.class);
+        when(redisson.getLock(anyString())).thenReturn(lock);
+        PlatformTransactionManager tx = mock(PlatformTransactionManager.class);
+        Slot slot = new Slot();
+        slot.setSlotId(1L);
+        slot.setReleased(1);
+        slot.setCapacity(10);
+        slot.setBucketCount(2);
+        SlotBucket first = new SlotBucket();
+        first.setBucketNo(0);
+        when(slots.selectById(1L)).thenReturn(slot);
+        when(slots.casIncreaseCapacity(1L, 0, 2)).thenReturn(1);
+        when(buckets.selectBySlot(1L)).thenReturn(List.of(first));
+        when(buckets.increaseTotal(1L, 0, 1)).thenReturn(1);
+
+        SlotService service = new SlotService(mock(SlotTemplateMapper.class), slots, buckets,
+                mock(AuditLogMapper.class), mock(IdGenerator.class), mock(TimeSupport.class),
+                new ReserveXProperties(), lua, mock(StringRedisTemplate.class), redisson, tx);
+
+        assertThatThrownBy(() -> service.increaseCapacity(1L, 2, 0))
+                .isInstanceOf(IllegalStateException.class);
+        verifyNoInteractions(tx, lua);
+    }
+
+    @Test
+    void increaseCapacityPassesVersionFenceToLua() {
+        SlotMapper slots = mock(SlotMapper.class);
+        SlotBucketMapper buckets = mock(SlotBucketMapper.class);
+        AuditLogMapper audits = mock(AuditLogMapper.class);
+        LuaScripts lua = mock(LuaScripts.class);
+        RedissonClient redisson = mock(RedissonClient.class);
+        when(redisson.getLock(anyString())).thenReturn(mock(RLock.class));
+        PlatformTransactionManager tx = mock(PlatformTransactionManager.class);
+        when(tx.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+
+        Slot slot = new Slot();
+        slot.setSlotId(1L);
+        slot.setReleased(1);
+        slot.setCapacity(10);
+        slot.setBucketCount(2);
+        slot.setVersion(1);
+        SlotBucket first = bucket(0, 5);
+        SlotBucket second = bucket(1, 5);
+        when(slots.selectById(1L)).thenReturn(slot);
+        when(slots.casIncreaseCapacity(1L, 1, 3)).thenReturn(1);
+        when(buckets.selectBySlot(1L)).thenReturn(List.of(first, second));
+        when(buckets.increaseTotal(1L, 0, 2)).thenReturn(1);
+        when(buckets.increaseTotal(1L, 1, 1)).thenReturn(1);
+        when(audits.insert(any(AuditLog.class))).thenReturn(1);
+
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> values = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(values);
+        when(values.multiGet(List.of("slot:1:b:0", "slot:1:b:1")))
+                .thenReturn(List.of("5", "5"));
+        when(values.get("slot:capacity:version:1")).thenReturn("1");
+        when(redis.getExpire("slot:capacity:version:1", TimeUnit.MILLISECONDS)).thenReturn(60_000L);
+        when(lua.evalLong(LuaScripts.Script.INCR,
+                List.of("slot:1:b:0", "slot:1:b:1"),
+                "2", "1", "1", "1", "2", "13")).thenReturn(1L);
+
+        SlotService service = new SlotService(mock(SlotTemplateMapper.class), slots, buckets,
+                audits, mock(IdGenerator.class), mock(TimeSupport.class),
+                new ReserveXProperties(), lua, redis, redisson, tx);
+        service.increaseCapacity(1L, 3, 1);
+
+        verify(lua).evalLong(LuaScripts.Script.INCR,
+                List.of("slot:1:b:0", "slot:1:b:1"),
+                "2", "1", "1", "1", "2", "13");
+    }
+
+    @Test
+    void increaseCapacityRejectsMissingRedisBucketBeforeDatabaseWrite() {
+        SlotMapper slots = mock(SlotMapper.class);
+        SlotBucketMapper buckets = mock(SlotBucketMapper.class);
+        LuaScripts lua = mock(LuaScripts.class);
+        RedissonClient redisson = mock(RedissonClient.class);
+        when(redisson.getLock(anyString())).thenReturn(mock(RLock.class));
+        PlatformTransactionManager tx = mock(PlatformTransactionManager.class);
+
+        Slot slot = new Slot();
+        slot.setSlotId(1L);
+        slot.setReleased(1);
+        slot.setCapacity(10);
+        slot.setBucketCount(2);
+        slot.setVersion(1);
+        when(slots.selectById(1L)).thenReturn(slot);
+        when(buckets.selectBySlot(1L)).thenReturn(List.of(bucket(0, 5), bucket(1, 5)));
+
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> values = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(values);
+        when(values.multiGet(List.of("slot:1:b:0", "slot:1:b:1")))
+                .thenReturn(java.util.Arrays.asList("5", null));
+        when(values.get("slot:capacity:version:1")).thenReturn("1");
+
+        SlotService service = new SlotService(mock(SlotTemplateMapper.class), slots, buckets,
+                mock(AuditLogMapper.class), mock(IdGenerator.class), mock(TimeSupport.class),
+                new ReserveXProperties(), lua, redis, redisson, tx);
+
+        assertThatThrownBy(() -> service.increaseCapacity(1L, 2, 1))
+                .isInstanceOf(com.reservex.common.BizException.class);
+        verifyNoInteractions(tx, lua);
+    }
+
+    private static SlotBucket bucket(int number, int total) {
+        SlotBucket bucket = new SlotBucket();
+        bucket.setBucketNo(number);
+        bucket.setTotal(total);
+        bucket.setOccupied(0);
+        return bucket;
     }
 }

@@ -1,7 +1,7 @@
 -- ============================================================================
 -- 增容(管理端,9 约束一)—— 04 §六 逐字落地
 --
--- 返回值:恒 1
+-- 返回值:1 本次增容 / 2 已应用(幂等) / 0 version 不匹配
 --
 -- ⚠️ ARGV[1..N] 是**逐桶增量**,不是"总增量均摊"。按 03 §4.2 余数规则:
 --    d_base = delta / N,**前 delta % N 个桶各多 1**。
@@ -23,11 +23,43 @@
 -- KEYS[1..N] = 该 slot 全部桶 keys(按 bucket_no 顺序)
 -- ARGV[1..N] = 各桶增量,与 KEYS 一一对应
 -- ARGV[N+1]  = slot_id
+-- ARGV[N+2]  = expected capacity version
+-- ARGV[N+3]  = new capacity version
+-- ARGV[N+4]  = new capacity
 -- ============================================================================
 
 local n = #KEYS
+local versionKey = 'slot:capacity:version:'..ARGV[n + 1]
+local applied = redis.call('GET', versionKey)
+local ttl = redis.call('PTTL', versionKey)
+if ttl <= 0 then
+    return 0
+end
+for i = 1, n do
+    -- A missing bucket cannot be reconstructed from the delta because its
+    -- previous remaining stock is unknown.
+    if redis.call('EXISTS', KEYS[i]) == 0 then
+        return 0
+    end
+end
+if applied == ARGV[n + 3] then
+    return 2
+end
+if applied ~= ARGV[n + 2] then
+    return 0
+end
 for i = 1, n do
     redis.call('INCRBY', KEYS[i], ARGV[i])
+    -- versionKey 是放号时同批设置的 TTL 门闩；缺桶重建后必须继承它的生命周期。
+    if redis.call('PTTL', KEYS[i]) < 0 and ttl > 0 then
+        redis.call('PEXPIRE', KEYS[i], ttl)
+    end
 end
 redis.call('DEL', 'slot:full:'..ARGV[n + 1])   -- 必须:增容后桶从 0 变正,清约满标记
+local metaKey = 'slot:meta:'..ARGV[n + 1]
+redis.call('HSET', metaKey, 'capacity', ARGV[n + 4])
+if redis.call('PTTL', metaKey) < 0 and ttl > 0 then
+    redis.call('PEXPIRE', metaKey, ttl)
+end
+redis.call('SET', versionKey, ARGV[n + 3], 'KEEPTTL')
 return 1

@@ -1,5 +1,6 @@
 package com.reservex.common;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.reservex.config.ReserveXProperties;
@@ -7,8 +8,13 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.converter.xml.MappingJackson2XmlHttpMessageConverter;
+import org.springframework.http.converter.yaml.MappingJackson2YamlHttpMessageConverter;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.TimeZone;
 
 /**
@@ -29,12 +35,18 @@ import java.util.TimeZone;
  */
 @Configuration
 @RequiredArgsConstructor
-public class JacksonConfig {
+public class JacksonConfig implements WebMvcConfigurer {
 
     private static final String DATE_TIME_PATTERN = "yyyy-MM-dd HH:mm:ss";
     private static final String DATE_PATTERN = "yyyy-MM-dd";
 
     private final ReserveXProperties props;
+
+    @Override
+    public void extendMessageConverters(List<HttpMessageConverter<?>> converters) {
+        converters.removeIf(converter -> converter instanceof MappingJackson2XmlHttpMessageConverter
+                || converter instanceof MappingJackson2YamlHttpMessageConverter);
+    }
 
     @Bean
     public Jackson2ObjectMapperBuilderCustomizer reserveXJacksonCustomizer() {
@@ -45,6 +57,9 @@ public class JacksonConfig {
             longToString.addSerializer(Long.class, ToStringSerializer.instance);
             longToString.addSerializer(Long.TYPE, ToStringSerializer.instance);
             builder.modules(longToString);
+            // A misspelled PATCH field must fail at the trust boundary instead of
+            // becoming a successful no-op update.
+            builder.featuresToEnable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
 
             builder.timeZone(TimeZone.getTimeZone(props.getZoneId()));
             builder.simpleDateFormat(DATE_TIME_PATTERN);

@@ -11,8 +11,8 @@ import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 身份证密文的唯一读写口(03 §2.1)。
@@ -45,7 +45,7 @@ public class IdCardCipher {
 
     private final ReserveXProperties props;
     private final SecureRandom random = new SecureRandom();
-    private final Map<String, SecretKey> keyCache = new HashMap<>();
+    private final Map<String, SecretKey> keyCache = new ConcurrentHashMap<>();
 
     /**
      * 加密,并返回当前使用的密钥版本 —— 调用方**必须**把 {@code keyId} 一起落库。

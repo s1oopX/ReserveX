@@ -34,7 +34,7 @@ import javax.sql.DataSource;
  * 且不报错。这是 08 §7.1 的第 2 条红线。
  *
  * <p>⚠️ 跨这两个数据源的操作(注册的"单库写 route + 分库写 user")<b>没有分布式事务</b>,
- * 靠 03 §八·补 的两写顺序 + 孤儿 route 清理任务收敛。不要试图用 {@code @Transactional}
+ * 靠 03 §八·补 的两写顺序 + 失败补偿降低风险,残留孤儿 route 由对账任务告警并人工复核。不要试图用 {@code @Transactional}
  * 包住两者 —— 那只会让人误以为有原子性。
  *
  * <p>⚠️ 所有 {@code DataSource}/{@code SqlSessionFactory} 参数必须带 {@link Qualifier}。

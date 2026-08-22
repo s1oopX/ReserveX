@@ -27,7 +27,11 @@
         SELECT `phone`, `user_id`, `create_at`
         FROM `phone_route`
         WHERE `create_at` &lt; #{cutoff}
-        ORDER BY `create_at`
+        <if test="afterCreateAt != null">
+          AND (`create_at` &gt; #{afterCreateAt}
+               OR (`create_at` = #{afterCreateAt} AND `phone` &gt; #{afterPhone}))
+        </if>
+        ORDER BY `create_at`, `phone`
         LIMIT #{limit}
     </select>
 

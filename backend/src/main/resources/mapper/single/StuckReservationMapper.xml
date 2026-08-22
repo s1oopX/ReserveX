@@ -44,25 +44,39 @@
                `id_card_hash`, `slot_date`, `reinject_count`, `last_error`,
                `status`, `create_at`, `resolve_at`, `resolver_id`
         FROM `stuck_reservation`
-        WHERE `status` = 0
+        WHERE `status` IN (0, 4)
         ORDER BY `create_at`
         LIMIT #{limit}
     </select>
 
+    <select id="selectByUser" resultMap="BaseResultMap">
+        SELECT `reservation_no`, `slot_id`, `bucket_key`, `dup_key`, `user_id`,
+               `id_card_hash`, `slot_date`, `reinject_count`, `last_error`,
+               `status`, `create_at`, `resolve_at`, `resolver_id`
+        FROM `stuck_reservation`
+        WHERE `user_id` = #{userId}
+        ORDER BY `create_at` DESC
+    </select>
+
     <!--
-      人工处置:status 0(待研判)→ 1 已重投成功 / 2 已回滚 / 3 已忽略。
-      ⚠️ 带 status=0 守卫,两个运维同时处置只有一个成功 ——
-         另一个拿到 0 行,前端应提示"已被他人处理",而不是双双显示成功
-         (那会让两人都以为自己回滚过 Redis,实际可能回滚了两次 = 凭空造库存)。
+      状态机:0 待研判 → 4 回滚处理中 → 2 已回滚。
+      status=4 是 DB CAS claim,防止两个回滚请求并发越过彼此。
       ⚠️ resolver_id 必填:人工动作必须有责任归属。
     -->
-    <update id="resolve">
+    <update id="transition">
         UPDATE `stuck_reservation`
-        SET `status`      = #{status},
-            `resolve_at`  = #{resolveAt},
-            `resolver_id` = #{resolverId}
+        SET `status`      = #{toStatus},
+            `resolve_at`  = IF(#{toStatus} = 0, NULL, #{resolveAt}),
+            `resolver_id` = IF(#{toStatus} = 0, NULL, #{resolverId})
         WHERE `reservation_no` = #{reservationNo}
-          AND `status`         = 0
+          AND `status`         = #{fromStatus}
+    </update>
+
+    <update id="resolveAutomatically">
+        UPDATE `stuck_reservation`
+        SET `status` = #{toStatus}, `resolve_at` = #{resolveAt}, `resolver_id` = NULL
+        WHERE `reservation_no` = #{reservationNo}
+          AND `status` = 0
     </update>
 
 </mapper>

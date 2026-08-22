@@ -36,9 +36,16 @@ public interface UserMapper extends BaseMapper<User> {
     int bootstrapAdminPassword(@Param("userId") Long userId,
                                @Param("sentinel") String sentinel,
                                @Param("bcrypt") String bcrypt,
+                               @Param("mustChangePassword") Integer mustChangePassword,
                                @Param("updateAt") java.time.LocalDateTime updateAt);
 
     int updatePassword(@Param("userId") Long userId,
+                       @Param("expectedHash") String expectedHash,
                        @Param("bcrypt") String bcrypt,
                        @Param("updateAt") java.time.LocalDateTime updateAt);
+
+    int updateStatus(@Param("userId") Long userId,
+                     @Param("expectedVersion") Integer expectedVersion,
+                     @Param("status") Integer status,
+                     @Param("updateAt") java.time.LocalDateTime updateAt);
 }

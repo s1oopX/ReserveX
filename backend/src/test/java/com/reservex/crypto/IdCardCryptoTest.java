@@ -3,8 +3,15 @@ package com.reservex.crypto;
 import com.reservex.config.ReserveXProperties;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -12,6 +19,39 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class IdCardCryptoTest {
+
+    @Test
+    void keyCacheSupportsConcurrentFirstUse() throws Exception {
+        ReserveXProperties props = new ReserveXProperties();
+        String idCard = "11010519491231002X";
+        List<IdCardCipher.Encrypted> encrypted = new ArrayList<>();
+        for (int i = 0; i < 16; i++) {
+            byte[] key = new byte[32];
+            Arrays.fill(key, (byte) (i + 1));
+            String keyId = "aes-v" + i;
+            props.getAes().getKeys().put(keyId, Base64.getEncoder().encodeToString(key));
+            props.getAes().setKeyId(keyId);
+            encrypted.add(new IdCardCipher(props).encrypt(idCard));
+        }
+
+        IdCardCipher cipher = new IdCardCipher(props);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(encrypted.size());
+        try {
+            List<Future<String>> results = encrypted.stream()
+                    .map(value -> executor.submit(() -> {
+                        start.await();
+                        return cipher.decrypt(value.ciphertext(), value.keyId());
+                    }))
+                    .toList();
+            start.countDown();
+            for (Future<String> result : results) {
+                assertThat(result.get(5, TimeUnit.SECONDS)).isEqualTo(idCard);
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
 
     @Test
     void usesFreshIvAndStablePepperedHash() {

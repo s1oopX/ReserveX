@@ -2,10 +2,8 @@
 -- ReserveX 建库 + 建表(08 §4.1)—— 纯 DDL,可重复执行
 --
 -- 执行者:MySQL 容器的 docker-entrypoint-initdb.d(按文件名字典序:01 → 02)
--- ⚠️ initdb.d 只在数据目录为空时执行一次。改了 DDL 后重启 compose **不会重跑**,
---    现象是"我改了 DDL 但表还是老的"。开发期重置:docker compose down -v 再起。
--- ⚠️ 生产不该用 initdb 做 schema 管理(这条已在 08 §4.1 认下)。演进方向是 Flyway,
---    届时本文件变成 V1__init.sql。别把 initdb 说成"数据库版本管理方案"。
+-- ⚠️ initdb.d 只在数据目录为空时执行一次。已有卷的结构演进由 Compose 的
+--    mysql-migrate 服务执行 docker/mysql/migrations 下的幂等脚本。
 -- ============================================================================
 
 CREATE DATABASE IF NOT EXISTS `reservex_ds0`    DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
@@ -42,6 +40,46 @@ CREATE TABLE IF NOT EXISTS `phone_route` (
   `create_at` DATETIME    NOT NULL,
   PRIMARY KEY (`phone`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='手机号唯一 + 路由';
+
+CREATE TABLE IF NOT EXISTS `id_card_identity` (
+  `id_card_hash` CHAR(64) NOT NULL,
+  `user_id`      BIGINT   NOT NULL,
+  `create_at`    DATETIME NOT NULL,
+  PRIMARY KEY (`id_card_hash`),
+  UNIQUE KEY `uk_id_card_identity_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='身份证全局唯一账号归属';
+
+-- 注册跨库写入的 durable payload。只存 BCrypt/加密证件字段，不存原始密码或原始证件号。
+-- status: 0 pending, 1 processing, 2 stuck, 3 completed;完成后只保留不可逆请求指纹与状态。
+CREATE TABLE IF NOT EXISTS `registration_outbox` (
+  `user_id`          BIGINT        NOT NULL,
+  `registration_key` VARCHAR(128)  NULL,
+  `request_fingerprint` VARCHAR(100) NULL,
+  `email`            VARCHAR(128)  NULL,
+  `phone`            VARCHAR(32)   NULL,
+  `password`         VARCHAR(100)  NULL,
+  `id_card_ciphertext` VARBINARY(128) NULL,
+  `id_card_key_id`   VARCHAR(64)   NULL,
+  `id_card_hash`     CHAR(64)      NULL,
+  `id_card_masked`   VARCHAR(32)   NULL,
+  `role`             VARCHAR(16)   NULL,
+  `user_status`      TINYINT       NULL,
+  `user_version`     INT           NULL,
+  `user_must_change_password` TINYINT NULL,
+  `status`           TINYINT       NOT NULL DEFAULT 0,
+  `attempts`         INT           NOT NULL DEFAULT 0,
+  `next_attempt_at`  DATETIME      NULL,
+  `lease_until`      DATETIME      NULL,
+  `lease_owner`      VARCHAR(64)   NULL,
+  `last_error`       VARCHAR(1000) NULL,
+  `operator_id`      BIGINT        NULL,
+  `audit_id`         BIGINT        NULL,
+  `create_at`        DATETIME      NOT NULL,
+  `update_at`        DATETIME      NOT NULL,
+  PRIMARY KEY (`user_id`),
+  UNIQUE KEY `uk_registration_request_key` (`registration_key`),
+  KEY `idx_registration_outbox_due` (`status`, `next_attempt_at`, `lease_until`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='注册跨库写入补偿 outbox';
 
 -- 一人一天配额去重(第二道防线;第一道是 Lua 的 SET NX dup)
 -- PK 结构上即"一天一次" → daily-per-idcard 只能是 1,启动断言,03 §3.1
@@ -101,12 +139,12 @@ CREATE TABLE IF NOT EXISTS `slot_bucket` (
 CREATE TABLE IF NOT EXISTS `state_log` (
   `xid`       VARCHAR(64) NOT NULL,
   `branch_id` VARCHAR(64) NOT NULL,                              -- = reservation_no(单分支)
-  `status`    TINYINT     NOT NULL,                              -- 0 初始 1 Try 2 Confirm 3 Cancel
+  `status`    TINYINT     NOT NULL,                              -- 0 初始 1 Try 2 Confirm 3 Cancel 4 人工回滚处理中
   `create_at` DATETIME    NOT NULL,
   `update_at` DATETIME    NOT NULL,
   PRIMARY KEY (`xid`),
   UNIQUE KEY `uk_xid_branch` (`xid`, `branch_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='事务日志(四个写入点见 03 §6.1)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='事务日志与人工回滚仲裁';
 
 -- 不可变事件流水(业务审计)
 CREATE TABLE IF NOT EXISTS `reservation_event` (
@@ -190,10 +228,31 @@ CREATE TABLE IF NOT EXISTS `stuck_reservation` (
   `slot_date`      DATE         NOT NULL,
   `reinject_count` INT          NOT NULL,                        -- 达 reinject-max 才入表
   `last_error`     VARCHAR(512) NULL,
-  `status`         TINYINT      NOT NULL DEFAULT 0,              -- 0待研判 1已重投成功 2已回滚 3已忽略
+  `status`         TINYINT      NOT NULL DEFAULT 0,              -- 0待研判 2已回滚 3已忽略 4回滚处理中
   `create_at`      DATETIME     NOT NULL,
   `resolve_at`     DATETIME     NULL,
   `resolver_id`    BIGINT       NULL,
   PRIMARY KEY (`reservation_no`),
   KEY `idx_status` (`status`, `create_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='卡单(补投耗尽转人工)';
+
+CREATE TABLE IF NOT EXISTS `dead_letter_message` (
+  `message_id`      VARCHAR(64) NOT NULL,
+  `source_group`    VARCHAR(64) NOT NULL,
+  `target_topic`    VARCHAR(64) NOT NULL,
+  `body`            MEDIUMTEXT  NOT NULL,
+  `reconsume_times` INT         NOT NULL,
+  `status`          TINYINT     NOT NULL DEFAULT 0,
+  `captured_at`     DATETIME    NOT NULL,
+  `update_at`       DATETIME    NULL,
+  `resolver_id`     BIGINT      NULL,
+  PRIMARY KEY (`message_id`),
+  KEY `idx_dead_letter_status_time` (`status`, `captured_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='RocketMQ 死信落库与人工重放';
+
+-- MySQL 官方镜像先按 MYSQL_USER/MYSQL_PASSWORD 创建应用账号并对 MYSQL_DATABASE
+-- 授予 ALL。这里收回默认授权，只保留运行期实际使用的四种 DML 权限。
+REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'reservex_app'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `reservex_ds0`.* TO 'reservex_app'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `reservex_ds1`.* TO 'reservex_app'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `reservex_single`.* TO 'reservex_app'@'%';

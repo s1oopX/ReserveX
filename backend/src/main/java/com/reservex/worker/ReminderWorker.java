@@ -28,9 +28,9 @@ import java.util.stream.Collectors;
  * 邮件提醒(04 §四 / 06 §四)。
  *
  * <p>在预约场次生效前 {@code ahead-min}(默认 30min)窗口内,向 RESERVED 用户发提醒邮件。
- * 幂等靠 Redis {@code SET NX} 标记,不查分库 event 表(跨库查更贵且无简单唯一键)。
+ * Redis 短租约挡并发发送,SMTP 成功后再把同一 key 提升为当天有效的 sent 标记。
  *
- * <p>⚠️ <b>现在由应用层算窗口,不用 SQL 的 NOW()}</b>(见 ReservationMapper.expireBySlot 注释:
+ * <p>⚠️ <b>现在由应用层算窗口,不用 SQL 的 NOW()}</b>(见 ReservationMapper 注释:
  * 容器时区漏配成 UTC 时 NOW() 早 8h,会把还没到提醒时间的预约全发提醒)。now 取 {@link TimeSupport}。
  *
  * <p>⚠️ <b>SMTP 密码是 placeholder,演示环境发不出邮件。</b>{@code JavaMailSender} Bean
@@ -47,7 +47,9 @@ import java.util.stream.Collectors;
 public class ReminderWorker {
 
     private static final String REMINDER_SENT_KEY_PREFIX = "reminder:sent:";
-    private static final String REMINDER_SENT_VALUE = "1";
+    private static final String REMINDER_SENDING_VALUE = "sending";
+    private static final String REMINDER_SENT_VALUE = "sent";
+    private static final Duration REMINDER_LEASE = Duration.ofMinutes(1);
 
     private final ReservationMapper reservationMapper;
     private final UserMapper userMapper;
@@ -86,7 +88,9 @@ public class ReminderWorker {
         int aheadMin = Math.min(props.getReminder().getAheadMin(), 30);
         LocalDateTime from = now;
         LocalDateTime to = now.plusMinutes(aheadMin);
-        List<Reservation> candidates = reservationMapper.selectReminderCandidates(from, to);
+        // valid_until 是结束时间，不是开场时间；放宽一日后再按 slot 开始时间精筛，
+        // 避免 09:00 场次在 10:30 才被提醒。场次按日生成，24h 是本任务的边界。
+        List<Reservation> candidates = reservationMapper.selectReminderCandidates(from, to.plusDays(1));
         if (candidates.isEmpty()) {
             return;
         }
@@ -104,11 +108,20 @@ public class ReminderWorker {
         int sent = 0;
         int skipped = 0;
         for (Reservation r : candidates) {
+            Slot slot = slotMapper.selectById(r.getSlotId());
+            if (slot == null) {
+                continue;
+            }
+            LocalDateTime startsAt = slot.getSlotDate().atTime(slot.getSlotHour(), 0);
+            if (startsAt.isBefore(from) || startsAt.isAfter(to)) {
+                continue;
+            }
             String sentKey = REMINDER_SENT_KEY_PREFIX + r.getSlotDate() + ":" + r.getReservationNo();
-            // 幂等:已发过则跳过。SET NX EXPIRE 原子,挡重跑。
+            // 短租约挡多实例并发；进程在 SMTP 前崩溃时，租约过期后仍能重试。
             Duration ttl = Duration.between(now, time.endOfDay(r.getSlotDate()));
             long ttlSec = Math.max(1L, ttl.getSeconds());
-            Boolean ok = redis.opsForValue().setIfAbsent(sentKey, REMINDER_SENT_VALUE, Duration.ofSeconds(ttlSec));
+            Boolean ok = redis.opsForValue().setIfAbsent(
+                    sentKey, REMINDER_SENDING_VALUE, REMINDER_LEASE);
             if (!Boolean.TRUE.equals(ok)) {
                 skipped++;
                 continue;
@@ -117,18 +130,25 @@ public class ReminderWorker {
             if (email == null) {
                 log.warn("提醒候选 user 不存在 rno={} userId={} (孤儿 user,route 未清理?)",
                         r.getReservationNo(), r.getUserId());
+                redis.delete(sentKey);
                 continue;
             }
-            sendReminder(r, email);
-            sent++;
+            if (sendReminder(r, email)) {
+                redis.opsForValue().set(
+                        sentKey, REMINDER_SENT_VALUE, Duration.ofSeconds(ttlSec));
+                sent++;
+            } else {
+                // 发送失败立即释放租约，不等下一次过期。
+                redis.delete(sentKey);
+            }
         }
         if (sent > 0 || skipped > 0) {
-            log.info("提醒邮件扫描完成 sent={} skipped(已发)={} window=[{},{}] candidates={}",
+            log.info("提醒邮件扫描完成 sent={} skipped(已发/发送中)={} window=[{},{}] candidates={}",
                     sent, skipped, from, to, candidates.size());
         }
     }
 
-    private void sendReminder(Reservation r, String email) {
+    private boolean sendReminder(Reservation r, String email) {
         Slot slot = slotMapper.selectById(r.getSlotId());
         int slotHour = slot != null ? slot.getSlotHour() : 0;
         SimpleMailMessage msg = new SimpleMailMessage();
@@ -138,12 +158,16 @@ public class ReminderWorker {
         msg.setText(buildBody(r, slotHour));
         try {
             mailSender.send(msg);
+            return true;
         } catch (MailAuthenticationException e) {
             // 演示环境 SMTP 密码是 placeholder,发不出邮件属预期。
-            log.warn("演示环境邮件不可用(SMTP 认证失败),已跳过发送 rno={} to={} msg={}",
-                    r.getReservationNo(), email, e.getMessage());
+            log.warn("演示环境邮件不可用(SMTP 认证失败),已跳过发送 rno={}",
+                    r.getReservationNo());
+            return false;
         } catch (RuntimeException e) {
-            log.error("提醒邮件发送失败 rno={} to={}", r.getReservationNo(), email, e);
+            log.error("提醒邮件发送失败 rno={} errorType={}", r.getReservationNo(),
+                    e.getClass().getSimpleName());
+            return false;
         }
     }
 

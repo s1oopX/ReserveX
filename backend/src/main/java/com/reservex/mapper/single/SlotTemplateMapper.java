@@ -9,8 +9,7 @@ import java.util.List;
 /**
  * 场次模板 Mapper(**单库**)。生成任务的数据源。
  *
- * <p>⚠️ 运行期一律读本表,**不读 {@code reservex.slot.seed.*}** ——
- * 那组 yml 只在 {@code 02-seed.sql} 灌种子时用一次(03 §4.0 / 08 §7.1 红线)。
+ * <p>运行期一律读本表;初始模板只由 {@code 02-seed.sql} 写入。
  */
 public interface SlotTemplateMapper extends BaseMapper<SlotTemplate> {
 

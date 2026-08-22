@@ -23,7 +23,7 @@ import java.time.LocalDateTime;
  * 失败/重放把真实 nonce 记到 {@code attempt_nonce}(**非唯一**),两列分工。
  * MySQL 的唯一索引允许多个 NULL,所以唯一性对成功记录仍然成立。
  *
- * <p>⚠️ <b>{@code result} 要区分四种失败原因</b>(1 重复 / 2 已取消 / 3 已过期 / 4 无效码),
+ * <p>⚠️ <b>{@code result} 要区分四种失败原因</b>(1 重复 / 2 已取消 / 3 已过期 / 4 无效凭据),
  * 不能笼统记"失败"。现场排查时"游客说扫不了"必须能立刻分清是他自己取消过、
  * 还是超时了、还是码被人抢先用了 —— 这是核销台唯一的证据来源。
  */
@@ -48,7 +48,7 @@ public class VerificationLog {
     /** 失败/重放时记录的真实 nonce,**非唯一**。见类注释。 */
     private String attemptNonce;
 
-    /** 0 成功,1 重复,2 已取消,3 已过期,4 无效码。 */
+    /** 0 成功,1 重复,2 已取消,3 已过期,4 无效 QR/手工凭据。 */
     private Integer result;
 
     private LocalDateTime verifyTime;

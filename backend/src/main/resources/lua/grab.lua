@@ -4,7 +4,7 @@
 -- 返回值契约(调用方按此分支,不要改动):
 --    1  预占成功
 --    0  已约满(真售罄,已写 slot:full 标记)
---   -1  今日配额已用(同一证件当天已约过)
+--   -1  今日配额已用(调用方可读取 dup 字符串并复核后恢复幂等响应)
 --   -2  限流命中(user 或 slot 维度超 1 秒固定窗口)
 --
 -- ⚠️ 抢号只动 Redis(Q1-B),此脚本内**不得出现任何 DB 语义**。
@@ -32,9 +32,8 @@
 -- ARGV[11] = pending ZSet key
 -- ARGV[12] = slot_full_key (slot:full:{slot_id})
 -- ARGV[13] = slot_full_ttl (秒, = slot_date 当日结束 − now)
--- ARGV[14] = occupy_ttl (秒, 默认 1800,取 yml pending.occupy-ttl-sec)
--- ARGV[15] = user_rps  (用户级 1 秒固定窗口上限,取 yml ratelimit.user-redis-rps)
--- ARGV[16] = slot_rps  (场次级 1 秒固定窗口上限,取 yml ratelimit.slot-redis-rps)
+-- ARGV[14] = user_rps  (用户级 1 秒固定窗口上限,取 yml ratelimit.user-redis-rps)
+-- ARGV[15] = slot_rps  (场次级 1 秒固定窗口上限,取 yml ratelimit.slot-redis-rps)
 -- ============================================================================
 
 -- 第零道:限流(D5)。1 秒固定窗口:INCR + 首次 EXPIRE。
@@ -43,8 +42,8 @@
 local n = #KEYS
 local rlUserKey   = KEYS[n - 1]
 local rlSlotKey   = KEYS[n]
-local userRps = tonumber(ARGV[15])
-local slotRps = tonumber(ARGV[16])
+local userRps = tonumber(ARGV[14])
+local slotRps = tonumber(ARGV[15])
 local userCnt = redis.call('INCR', rlUserKey)
 if userCnt == 1 then redis.call('EXPIRE', rlUserKey, 1) end
 if userCnt > userRps then return -2 end
@@ -54,7 +53,7 @@ if slotCnt > slotRps then return -2 end
 
 -- 第一道:全日配额判重(不占库存的快速失败)
 if redis.call('SET', ARGV[4], ARGV[1], 'NX', 'EX', ARGV[5]) == false then
-    return -1  -- 今日配额已用
+    return -1
 end
 
 -- occupy():bucketKey = 命中桶完整 key(主桶 KEYS[1] 或借桶 KEYS[i])
@@ -68,7 +67,7 @@ local function occupy(bucketKey)
         'user_id', ARGV[3], 'id_card_masked', ARGV[9], 'create_ts', ARGV[10])
     -- bucket(完整桶 key,10.2a INCR 用)+ bucket_no(裸号)显式双存:
     -- 10.2a 回滚靠 HGET 'bucket' 拿完整 key,少一个就无法回滚到正确的桶
-    redis.call('EXPIRE', 'occupy:'..ARGV[1], ARGV[14])
+    -- occupy 是扣库存后的恢复证据，只能由成功消费或明确补偿删除。
     redis.call('ZADD', ARGV[11], ARGV[10], ARGV[1]) -- D2 pending 索引
     redis.call('INCR', 'stats:bucket:'..bucketKey..':hit')  -- 压测埋点
     return 1

@@ -1,6 +1,5 @@
 package com.reservex.controller;
 
-import cn.dev33.satoken.stp.StpUtil;
 import com.reservex.common.BizException;
 import com.reservex.common.ErrorCode;
 import com.reservex.common.Result;
@@ -28,7 +27,6 @@ public class SlotController {
     @GetMapping
     public Result<List<SlotService.SlotView>> list(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        StpUtil.checkRole("USER");
         if (date.isBefore(time.today()) || date.isAfter(time.today().plusDays(7))) {
             throw new BizException(ErrorCode.BAD_REQUEST, "只能查询今天起 7 天内的场次");
         }
@@ -37,7 +35,6 @@ public class SlotController {
 
     @GetMapping("/{slotId}")
     public Result<SlotService.SlotView> detail(@PathVariable long slotId) {
-        StpUtil.checkRole("USER");
         return Result.ok(slotService.getSlot(slotId));
     }
 }

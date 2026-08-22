@@ -22,13 +22,14 @@
         VALUES (#{xid}, #{branchId}, 1, NOW(), NOW())
     </insert>
 
-    <!-- ② Confirm(核销 CAS 成功后)。已 Confirm/已 Cancel 时 0 行,幂等 -->
+    <!-- ② Confirm(核销 CAS 成功后)。reservation 的 CAS 是业务真值；
+         窗口期取消可能在 CAS 后、此更新前写入 Cancel，因此 Confirm 必须能收口 1/3。 -->
     <update id="confirm">
         UPDATE `state_log`
         SET `status`    = 2,
             `update_at` = NOW()
         WHERE `xid`    = #{xid}
-          AND `status` = 1
+          AND `status` IN (1, 3)
     </update>
 
     <!-- ③ Cancel(取消/超时/10.2a 回滚)。
@@ -51,7 +52,28 @@
     <insert id="insertOrCancel">
         INSERT INTO `state_log` (`xid`, `branch_id`, `status`, `create_at`, `update_at`)
         VALUES (#{xid}, #{branchId}, 3, NOW(), NOW())
-        ON DUPLICATE KEY UPDATE `status` = 3, `update_at` = NOW()
+        ON DUPLICATE KEY UPDATE
+            `status` = IF(`status` IN (2, 4), `status`, 3),
+            `update_at` = NOW()
+    </insert>
+
+    <!-- Lua 已回补后的专用收口。取消/过期不得覆盖 status=4。 -->
+    <update id="completeRollback">
+        UPDATE `state_log`
+        SET `status` = 3, `update_at` = NOW()
+        WHERE `xid` = #{xid} AND `status` = 4
+    </update>
+
+    <update id="promoteRollbackClaim">
+        UPDATE `state_log`
+        SET `status` = 4, `update_at` = NOW()
+        WHERE `xid` = #{xid} AND `status` = 3
+    </update>
+
+    <!-- 人工回滚与 persistence-consumer 的单库仲裁点。PK 已存在时不覆盖任何终态。 -->
+    <insert id="insertRollbackClaim">
+        INSERT IGNORE INTO `state_log` (`xid`, `branch_id`, `status`, `create_at`, `update_at`)
+        VALUES (#{xid}, #{branchId}, 4, NOW(), NOW())
     </insert>
 
 </mapper>

@@ -33,6 +33,7 @@ public class ConfigGuard {
         assertConnectionBudget();
         assertConsumerSemantics();
         assertSnowflakeIdRange();
+        assertLoginRateLimit();
         log.info("配置红线断言通过");
     }
 
@@ -135,6 +136,23 @@ public class ConfigGuard {
                     "reservex.id.worker-id=" + worker + ", datacenter-id=" + dc
                             + "。Snowflake 机器/数据中心位各 5 位,允许 0~31;"
                             + "多实例需设环境变量 WORKER_ID 或保证 Redis 可用(08 §九)");
+        }
+    }
+
+    private void assertLoginRateLimit() {
+        if (props.getRatelimit().getLoginMaxAttempts() <= 0
+                || props.getRatelimit().getLoginIpMaxAttempts() <= 0
+                || props.getRatelimit().getLoginWindowSec() <= 0
+                || props.getRatelimit().getRegisterIdentityMaxAttempts() <= 0
+                || props.getRatelimit().getRegisterIpMaxAttempts() <= 0
+                || props.getRatelimit().getRegisterWindowSec() <= 0
+                || props.getRatelimit().getRefreshIpMaxAttempts() <= 0
+                || props.getRatelimit().getRefreshWindowSec() <= 0
+                || props.getRatelimit().getCaptchaGenerateIpMaxAttempts() <= 0
+                || props.getRatelimit().getCaptchaVerifyIpMaxAttempts() <= 0
+                || props.getRatelimit().getCaptchaIpWindowSec() <= 0) {
+            throw new IllegalStateException(
+                    "登录/注册/刷新限流阈值与窗口必须全部大于 0");
         }
     }
 }

@@ -44,7 +44,6 @@ public class ReserveXProperties {
     private AdminBootstrap adminBootstrap = new AdminBootstrap();
     private RateLimit ratelimit = new RateLimit();
     private Risk risk = new Risk();
-    private Redis redis = new Redis();
     private Executor executor = new Executor();
     private Consumer consumer = new Consumer();
     private Id id = new Id();
@@ -86,31 +85,12 @@ public class ReserveXProperties {
     public static class Slot {
         private String genCron = "0 30 2 * * ?";
         private int genDaysAhead = 1;
-        private Seed seed = new Seed();
-
-        /**
-         * ⚠️ **只用于灌 02-seed.sql 的 slot_template 种子**。
-         * 运行期一律读 {@code slot_template} 表,不读这里 ——
-         * 否则改容量要重启、且无法按时段差异化(03 §4.0)。
-         * 代码里凡是在业务路径读本类字段的都是错的。
-         */
-        @Data
-        public static class Seed {
-            private List<Integer> templateHours = new ArrayList<>(List.of(9, 11, 14, 16));
-            private int defaultDurationMin = 120;
-            private int defaultCapacity = 50;
-            private int defaultBucketCount = 10;
-            private int defaultReleaseOffsetMin = -840;
-        }
     }
 
     @Data
     public static class RedisKey {
         /** TTL 一律派生不硬编,避免"跨天场次的 key 提前消失"(04 §1.1 根因)。 */
-        private String dupTtlMode = "until-slot-date-end";
         private int dupTtlCapDays = 7;
-        private String slotFullTtlMode = "until-slot-date-end";
-        private String bucketTtlMode = "until-slot-date-end";
         private long metaTtlBaseSec = 86400;
         private long metaTtlJitterSec = 300;
     }
@@ -122,18 +102,11 @@ public class ReserveXProperties {
         private int scanPageSize = 500;
         /** 同一 rno 补投上限;耗尽转 stuck,**不自主 10.2a**(04 §三·补)。 */
         private int reinjectMax = 5;
-        private int occupyTtlSec = 1800;
-        private boolean stuckKeepRenewingOccupy = true;
-        private String stuckInspectCron = "0 */10 * * * ?";
-        private int stuckAlertAfterMin = 60;
     }
 
     @Data
     public static class Reconcile {
-        private boolean enabled = true;
-        private int doneMarkerTtlSec = 300;
         private int pageSize = 500;
-        private int rateLimitPerSec = 200;
         /** 默认只告警不自动改;开启必带 {@code reconcile:fixing:*} 状态守卫(06 §4.5)。 */
         private boolean stockAutoFix = false;
         private Map<String, String> crons = new LinkedHashMap<>();
@@ -170,8 +143,8 @@ public class ReserveXProperties {
 
     @Data
     public static class Qr {
-        /** 与 AES 数据密钥分离:同一 key 既加密身份证又签 QR,一处泄露两处失守。 */
-        private String hmacKey;
+        /** 按载荷 kid 取验签密钥；保留旧 key 才能在轮换窗口内验证旧码。 */
+        private Map<String, String> keys = new LinkedHashMap<>();
         private String keyId = "qr-v1";
         /** 轮换时旧 kid 保留在此直至窗口过(07 §3.4.1)。 */
         private List<String> acceptedKeyIds = new ArrayList<>(List.of("qr-v1"));
@@ -193,6 +166,17 @@ public class ReserveXProperties {
         private int apiLocalRps = 2000;
         private int userRedisRps = 5;
         private int slotRedisRps = 100;
+        private int loginMaxAttempts = 10;
+        private int loginIpMaxAttempts = 100;
+        private int loginWindowSec = 60;
+        private int registerIdentityMaxAttempts = 3;
+        private int registerIpMaxAttempts = 20;
+        private int registerWindowSec = 3600;
+        private int refreshIpMaxAttempts = 120;
+        private int refreshWindowSec = 60;
+        private int captchaGenerateIpMaxAttempts = 30;
+        private int captchaVerifyIpMaxAttempts = 120;
+        private int captchaIpWindowSec = 60;
     }
 
     @Data
@@ -208,19 +192,6 @@ public class ReserveXProperties {
         private int riskCounterTtlSec = 60;
         /** 验证码本身的存活秒数。 */
         private int captchaTtlSec = 300;
-    }
-
-    @Data
-    public static class Redis {
-        private Degrade degrade = new Degrade();
-
-        @Data
-        public static class Degrade {
-            /** 库存真理源不可用时不能放行。 */
-            private String grab = "reject";
-            private String query = "passthrough";
-            private String verify = "local-only";
-        }
     }
 
     @Data

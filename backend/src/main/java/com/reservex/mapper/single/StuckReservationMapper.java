@@ -26,9 +26,18 @@ public interface StuckReservationMapper extends BaseMapper<StuckReservation> {
     /** 对账中心第三个 Tab:待研判列表。 */
     List<StuckReservation> selectPending(@Param("limit") Integer limit);
 
-    /** 人工处置。{@code resolverId} 必填 —— 人工动作必须有责任归属。 */
-    int resolve(@Param("reservationNo") Long reservationNo,
-                @Param("status") Integer status,
-                @Param("resolverId") Long resolverId,
-                @Param("resolveAt") LocalDateTime resolveAt);
+    /** User read model: keep scanner failures visible after they leave pending ZSet. */
+    List<StuckReservation> selectByUser(@Param("userId") Long userId);
+
+    /** 卡单状态 CAS。{@code resolverId} 必填 —— 人工动作必须有责任归属。 */
+    int transition(@Param("reservationNo") Long reservationNo,
+                   @Param("fromStatus") Integer fromStatus,
+                   @Param("toStatus") Integer toStatus,
+                   @Param("resolverId") Long resolverId,
+                   @Param("resolveAt") LocalDateTime resolveAt);
+
+    /** Closes a scanner row when delayed MQ processing eventually completes. */
+    int resolveAutomatically(@Param("reservationNo") Long reservationNo,
+                             @Param("toStatus") Integer toStatus,
+                             @Param("resolveAt") LocalDateTime resolveAt);
 }

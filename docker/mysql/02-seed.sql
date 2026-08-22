@@ -59,6 +59,9 @@ VALUES ('admin@reservex.local', 1, NOW());
 INSERT IGNORE INTO `phone_route` (`phone`, `user_id`, `create_at`)
 VALUES ('00000000000', 1, NOW());
 
+INSERT IGNORE INTO `id_card_identity` (`id_card_hash`, `user_id`, `create_at`)
+VALUES (RPAD('ADMIN-RESERVED-NO-IDCARD', 64, '0'), 1, NOW());
+
 -- ⚠️ 刻意不写 id_card_route:超管不预约。写了反而会占掉一个真实身份证的配额位。
 
 -- ============================================================================

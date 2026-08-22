@@ -1,8 +1,8 @@
 package com.reservex.service;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.reservex.common.BizException;
 import com.reservex.common.ErrorCode;
+import com.reservex.common.HttpPreconditions;
 import com.reservex.common.TimeSupport;
 import com.reservex.config.ReserveXProperties;
 import com.reservex.entity.AuditLog;
@@ -16,9 +16,10 @@ import com.reservex.mapper.single.SlotBucketMapper;
 import com.reservex.mapper.single.SlotMapper;
 import com.reservex.mapper.single.SlotTemplateMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.event.EventListener;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -34,8 +35,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
-/** 场次模板、生成、放号和查询。 */
+/** 场次生成、放号、库存恢复和查询。模板 CRUD 属于 SlotTemplateAdminService。 */
 @Slf4j
 @Service
 public class SlotService {
@@ -49,6 +51,7 @@ public class SlotService {
     private final ReserveXProperties props;
     private final LuaScripts lua;
     private final StringRedisTemplate redis;
+    private final RedissonClient redisson;
     private final TransactionTemplate singleTx;
 
     public SlotService(SlotTemplateMapper templateMapper,
@@ -60,6 +63,7 @@ public class SlotService {
                        ReserveXProperties props,
                        LuaScripts lua,
                        StringRedisTemplate redis,
+                       RedissonClient redisson,
                        @Qualifier("singleTxManager") PlatformTransactionManager txManager) {
         this.templateMapper = templateMapper;
         this.slotMapper = slotMapper;
@@ -70,62 +74,8 @@ public class SlotService {
         this.props = props;
         this.lua = lua;
         this.redis = redis;
+        this.redisson = redisson;
         this.singleTx = new TransactionTemplate(txManager);
-    }
-
-    public List<TemplateView> listTemplates() {
-        return templateMapper.selectList(new LambdaQueryWrapper<SlotTemplate>()
-                        .orderByAsc(SlotTemplate::getSlotHour))
-                .stream().map(TemplateView::from).toList();
-    }
-
-    public TemplateView createTemplate(TemplateInput input) {
-        validateTemplate(input.slotHour(), input.durationMin(), input.capacity(),
-                input.bucketCount(), input.releaseOffsetMin());
-        LocalDateTime now = time.now();
-        SlotTemplate template = new SlotTemplate();
-        template.setTemplateId(idGenerator.nextId());
-        apply(template, input);
-        template.setEnabled(input.enabled() ? 1 : 0);
-        template.setCreateAt(now);
-        template.setUpdateAt(now);
-        template.setVersion(0);
-        try {
-            templateMapper.insert(template);
-        } catch (DuplicateKeyException e) {
-            throw new BizException(ErrorCode.TEMPLATE_INVALID, "该时段已有模板");
-        }
-        return TemplateView.from(template);
-    }
-
-    public TemplateView updateTemplate(long templateId, TemplatePatch patch) {
-        SlotTemplate template = templateMapper.selectById(templateId);
-        if (template == null) {
-            throw BizException.of(ErrorCode.NOT_FOUND);
-        }
-        if (patch.version() == null || patch.version() != template.getVersion()) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "模板已被其他管理员修改，请刷新后重试");
-        }
-        TemplateInput merged = new TemplateInput(
-                patch.slotHour() == null ? template.getSlotHour() : patch.slotHour(),
-                patch.durationMin() == null ? template.getDurationMin() : patch.durationMin(),
-                patch.capacity() == null ? template.getCapacity() : patch.capacity(),
-                patch.bucketCount() == null ? template.getBucketCount() : patch.bucketCount(),
-                patch.releaseOffsetMin() == null ? template.getReleaseOffsetMin() : patch.releaseOffsetMin(),
-                patch.enabled() == null ? template.getEnabled() == 1 : patch.enabled());
-        validateTemplate(merged.slotHour(), merged.durationMin(), merged.capacity(),
-                merged.bucketCount(), merged.releaseOffsetMin());
-        if (merged.slotHour() != template.getSlotHour()) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "模板时段不可修改，请停用后新建");
-        }
-        apply(template, merged);
-        template.setEnabled(merged.enabled() ? 1 : 0);
-        template.setUpdateAt(time.now());
-        if (templateMapper.casUpdate(template) != 1) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "模板已被其他管理员修改，请刷新后重试");
-        }
-        template.setVersion(template.getVersion() + 1);
-        return TemplateView.from(template);
     }
 
     @Scheduled(cron = "${reservex.slot.gen-cron}")
@@ -190,22 +140,28 @@ public class SlotService {
     }
 
     private void release(Slot slot) {
-        if (slotMapper.casRelease(slot.getSlotId(), slot.getVersion()) != 1) {
-            return;
+        RLock lock = capacityLock(slot.getSlotId());
+        lock.lock();
+        try {
+            if (slotMapper.casRelease(slot.getSlotId(), slot.getVersion()) != 1) {
+                return;
+            }
+            slot.setReleased(1);
+            slot.setVersion(slot.getVersion() + 1);
+            List<SlotBucket> buckets = bucketMapper.selectBySlot(slot.getSlotId());
+            initializeBuckets(slot, buckets, false);
+            cacheMeta(slot);
+            log.info("场次放号 slotId={} date={} hour={} capacity={}",
+                    slot.getSlotId(), slot.getSlotDate(), slot.getSlotHour(), slot.getCapacity());
+        } finally {
+            lock.unlock();
         }
-        List<SlotBucket> buckets = bucketMapper.selectBySlot(slot.getSlotId());
-        initializeBuckets(slot, buckets, false);
-        slot.setReleased(1);
-        slot.setVersion(slot.getVersion() + 1);
-        cacheMeta(slot);
-        log.info("场次放号 slotId={} date={} hour={} capacity={}",
-                slot.getSlotId(), slot.getSlotDate(), slot.getSlotHour(), slot.getCapacity());
     }
 
     private void initializeBuckets(Slot slot, List<SlotBucket> buckets, boolean fromOccupied) {
         List<Object> keys = buckets.stream().map(b -> bucketKey(slot.getSlotId(), b.getBucketNo()))
                 .map(Object.class::cast).toList();
-        List<Object> argv = new ArrayList<>(buckets.size() + 2);
+        List<Object> argv = new ArrayList<>(buckets.size() + 3);
         for (SlotBucket bucket : buckets) {
             int remaining = fromOccupied ? bucket.getTotal() - bucket.getOccupied() : bucket.getTotal();
             argv.add(Integer.toString(Math.max(0, remaining)));
@@ -213,6 +169,7 @@ public class SlotService {
         argv.add(Long.toString(slot.getSlotId()));
         argv.add(Long.toString(time.ttlUntilEndOfDay(
                 slot.getSlotDate(), props.getRedisKey().getDupTtlCapDays())));
+        argv.add(Integer.toString(slot.getVersion()));
         lua.evalLong(LuaScripts.Script.RELEASE, keys, argv.toArray());
     }
 
@@ -224,18 +181,31 @@ public class SlotService {
                 if (slot.getReleased() != 1) {
                     continue;
                 }
-                List<String> values = bucketValues(slot);
-                long present = values.stream().filter(java.util.Objects::nonNull).count();
-                if (present == 0) {
-                    initializeBuckets(slot, bucketMapper.selectBySlot(slot.getSlotId()), true);
-                    log.warn("恢复缺失的 Redis 场次库存 slotId={}", slot.getSlotId());
-                } else if (present != slot.getBucketCount()) {
-                    log.error("Redis 场次库存仅部分存在，拒绝覆盖 slotId={} present={}/{}",
-                            slot.getSlotId(), present, slot.getBucketCount());
-                    continue;
-                }
-                cacheMeta(slot);
+                repairReleasedCache(slot);
             }
+        }
+    }
+
+    private void repairReleasedCache(Slot slot) {
+        RLock lock = capacityLock(slot.getSlotId());
+        lock.lock();
+        try {
+            List<SlotBucket> buckets = bucketMapper.selectBySlot(slot.getSlotId());
+            List<String> values = bucketValues(slot);
+            long present = values.stream().filter(java.util.Objects::nonNull).count();
+            if (present == 0) {
+                initializeBuckets(slot, buckets, true);
+                log.warn("恢复缺失的 Redis 场次库存 slotId={}", slot.getSlotId());
+            } else if (present != slot.getBucketCount()) {
+                log.error("Redis 场次库存仅部分存在，拒绝覆盖 slotId={} present={}/{}",
+                        slot.getSlotId(), present, slot.getBucketCount());
+                return;
+            } else if (!syncCapacityVersion(slot, buckets, values)) {
+                return;
+            }
+            cacheMeta(slot);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -260,11 +230,43 @@ public class SlotService {
     }
 
     public List<AdminSlotView> listAdminSlots(LocalDate date) {
-        return slotMapper.selectByDate(date).stream().map(slot -> new AdminSlotView(
-                slot.getSlotId(), slot.getTemplateId(), slot.getSlotDate(), slot.getSlotHour(),
-                slot.getDurationMin(), slot.getValidUntil(), slot.getCapacity(), slot.getBucketCount(),
-                slot.getReleased() == 1, slot.getReleaseAt(), slot.getVersion(), remain(slot),
-                Boolean.TRUE.equals(redis.hasKey(metaKey(slot.getSlotId()))))).toList();
+        return slotMapper.selectByDate(date).stream().map(this::toAdminView).toList();
+    }
+
+    public AdminSlotView getAdminSlot(long slotId) {
+        Slot slot = slotMapper.selectById(slotId);
+        if (slot == null) {
+            throw BizException.of(ErrorCode.SLOT_NOT_FOUND);
+        }
+        return toAdminView(slot);
+    }
+
+    /** Replaces the exposed capacity representation while preserving the business rule "increase only". */
+    public AdminSlotView setCapacity(long slotId, int capacity,
+                                     HttpPreconditions.VersionCondition condition,
+                                     long operatorId) {
+        RLock lock = capacityLock(slotId);
+        lock.lock();
+        try {
+            Slot slot = slotMapper.selectById(slotId);
+            if (slot == null) {
+                throw BizException.of(ErrorCode.SLOT_NOT_FOUND);
+            }
+            if (!condition.matches(slot.getVersion())) {
+                throw BizException.of(ErrorCode.PRECONDITION_FAILED);
+            }
+            int delta = capacity - slot.getCapacity();
+            if (delta < 0) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "场次容量只允许增加");
+            }
+            if (delta > 0) {
+                increaseCapacityLocked(slotId, delta, slot.getVersion(), operatorId);
+                slot = slotMapper.selectById(slotId);
+            }
+            return toAdminView(slot);
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -273,12 +275,22 @@ public class SlotService {
      * <p>三件同步(缺一即不一致):① DB slot.capacity CAS ② slot_bucket.total 逐桶加
      * (按余数规则算逐桶增量,复用 splitBuckets 同款逻辑)③ Redis incr.lua 逐桶 INCRBY +
      * DEL slot:full + HSET slot:meta capacity。顺序:DB CAS 成功才碰 Redis
-     * (CAS 失败抛并发冲突,不碰 Redis)。Redis 失败 DB 已改,靠对账 diff + log 暴露,不自动修
-     * (与 stock-auto-fix=false 一致)。
+     * (CAS 失败抛并发冲突,不碰 Redis)。Redis 用容量 version 幂等追赶 DB，失败时明确返回降级，
+     * 下一轮 cache repair 可安全重放。
      *
      * @throws BizException BAD_REQUEST 当 delta<=0 或 version 冲突
      */
     public void increaseCapacity(long slotId, int delta, int version) {
+        RLock lock = capacityLock(slotId);
+        lock.lock();
+        try {
+            increaseCapacityLocked(slotId, delta, version, null);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void increaseCapacityLocked(long slotId, int delta, int version, Long operatorId) {
         if (delta <= 0) {
             throw new BizException(ErrorCode.BAD_REQUEST, "增容数量必须为正整数");
         }
@@ -293,43 +305,55 @@ public class SlotService {
         final int newCapacity = oldCapacity + delta;
         final List<SlotBucket> buckets = bucketMapper.selectBySlot(slotId);
         final List<Integer> perBucket = splitDelta(delta, slot.getBucketCount());
-        // DB 侧:capacity CAS + 逐桶 total。CAS 失败抛 BAD_REQUEST(并发改)。
-        int cas = slotMapper.casIncreaseCapacity(slotId, version, delta);
-        if (cas != 1) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "场次已被其他管理员修改,请刷新后重试");
+        validateBuckets(slot, buckets);
+        if (!syncCapacityVersion(slot, buckets, bucketValues(slot))) {
+            throw new BizException(ErrorCode.SERVICE_DEGRADED,
+                    "Redis 容量版本不明确，已拒绝增容");
         }
-        for (int i = 0; i < buckets.size(); i++) {
-            bucketMapper.increaseTotal(slotId, i, perBucket.get(i));
-        }
-        // Redis 侧:incr.lua 逐桶 INCRBY + DEL slot:full。失败不回滚 DB,靠对账暴露。
-        try {
-            List<Object> keys = buckets.stream()
-                    .map(b -> (Object) bucketKey(slotId, b.getBucketNo())).toList();
-            List<Object> argv = new ArrayList<>(perBucket.size() + 1);
-            for (Integer d : perBucket) {
-                argv.add(Integer.toString(d));
+        // DB 侧:capacity CAS + 逐桶 total 必须同一事务，否则中途缺桶会留下半套容量。
+        singleTx.executeWithoutResult(status -> {
+            if (slotMapper.casIncreaseCapacity(slotId, version, delta) != 1) {
+                throw new BizException(ErrorCode.STATE_CONFLICT, "场次已被其他管理员修改,请刷新后重试");
             }
-            argv.add(Long.toString(slotId));
-            lua.evalLong(LuaScripts.Script.INCR, keys, argv.toArray());
-            redis.opsForHash().put(metaKey(slotId), "capacity", Integer.toString(newCapacity));
+            for (int i = 0; i < slot.getBucketCount(); i++) {
+                int bucketNo = buckets.get(i).getBucketNo();
+                if (bucketMapper.increaseTotal(slotId, bucketNo, perBucket.get(i)) != 1) {
+                    throw new IllegalStateException("slot_bucket 不存在 slotId=" + slotId + " bucket=" + i);
+                }
+            }
+            AuditLog audit = new AuditLog();
+            audit.setId(idGenerator.nextId());
+            audit.setOperatorType("ADMIN");
+            audit.setOperatorId(operatorId);
+            audit.setAction("INCREASE_CAPACITY");
+            audit.setTargetType("SLOT");
+            audit.setTargetId(slotId);
+            audit.setBefore("{\"capacity\":" + oldCapacity + "}");
+            audit.setAfter("{\"capacity\":" + newCapacity + ",\"delta\":" + delta + "}");
+            audit.setRequestId("admin-incr-" + slotId);
+            audit.setCreateAt(time.now());
+            if (auditMapper.insert(audit) != 1) {
+                throw new IllegalStateException("增容审计写入失败 slotId=" + slotId);
+            }
+        });
+        // Redis 侧用 version 门闩幂等；未知结果可由下一轮 repair 安全重试。
+        try {
+            applyCapacityDelta(slotId, buckets, perBucket, version, version + 1, newCapacity);
         } catch (RuntimeException e) {
-            log.error("增容 Redis 同步失败,DB 已改 {},等待对账暴露 slotId={} delta={}",
+            log.error("增容 Redis 同步失败,DB 已改 {},等待 repair 幂等追赶 slotId={} delta={}",
                     newCapacity, slotId, delta, e);
+            throw new BizException(ErrorCode.SERVICE_DEGRADED,
+                    "数据库已增容，Redis 正在恢复，请稍后刷新");
         }
-        // 审计
-        AuditLog audit = new AuditLog();
-        audit.setId(idGenerator.nextId());
-        audit.setOperatorType("ADMIN");
-        audit.setOperatorId(null);
-        audit.setAction("INCREASE_CAPACITY");
-        audit.setTargetType("slot");
-        audit.setTargetId(slotId);
-        audit.setBefore("{\"capacity\":" + oldCapacity + "}");
-        audit.setAfter("{\"capacity\":" + newCapacity + ",\"delta\":" + delta + "}");
-        audit.setRequestId("admin-incr-" + slotId);
-        audit.setCreateAt(time.now());
-        singleTx.executeWithoutResult(status -> auditMapper.insert(audit));
         log.info("增容 slotId={} {}→{}", slotId, oldCapacity, newCapacity);
+    }
+
+    private AdminSlotView toAdminView(Slot slot) {
+        return new AdminSlotView(slot.getSlotId(), slot.getTemplateId(), slot.getSlotDate(),
+                slot.getSlotHour(), slot.getDurationMin(), slot.getValidUntil(), slot.getCapacity(),
+                slot.getBucketCount(), slot.getReleased() == 1, slot.getReleaseAt(),
+                slot.getVersion(), remain(slot),
+                Boolean.TRUE.equals(redis.hasKey(metaKey(slot.getSlotId()))));
     }
 
     /**
@@ -400,6 +424,122 @@ public class SlotService {
         return values == null ? java.util.Collections.nCopies(slot.getBucketCount(), null) : values;
     }
 
+    private boolean syncCapacityVersion(Slot slot, List<SlotBucket> buckets, List<String> values) {
+        String key = capacityVersionKey(slot.getSlotId());
+        String raw = redis.opsForValue().get(key);
+        if (raw == null) {
+            if (!matchesDatabaseRemaining(slot, buckets, values)) {
+                log.error("Redis 容量版本缺失且桶余量与 DB 不符 slotId={}", slot.getSlotId());
+                return false;
+            }
+            Duration ttl = Duration.ofSeconds(Math.max(1L, time.ttlUntilEndOfDay(
+                    slot.getSlotDate(), props.getRedisKey().getDupTtlCapDays())));
+            redis.opsForValue().setIfAbsent(key, Integer.toString(slot.getVersion()), ttl);
+            raw = redis.opsForValue().get(key);
+        }
+        int applied;
+        try {
+            applied = Integer.parseInt(raw);
+        } catch (RuntimeException e) {
+            log.error("Redis 容量版本非法 slotId={} value={}", slot.getSlotId(), raw);
+            return false;
+        }
+        if (applied == slot.getVersion()) {
+            if (values.size() != slot.getBucketCount()
+                    || values.stream().anyMatch(java.util.Objects::isNull)
+                    || redis.getExpire(key, TimeUnit.MILLISECONDS) <= 0) {
+                log.error("Redis 容量门闩或桶不完整 slotId={}", slot.getSlotId());
+                return false;
+            }
+            if (!matchesDatabaseRemaining(slot, buckets, values)) {
+                log.error("Redis/DB 逐桶余量不一致 slotId={}", slot.getSlotId());
+                return false;
+            }
+            return true;
+        }
+        if (applied != slot.getVersion() - 1) {
+            log.error("Redis/DB 容量版本跨级 slotId={} redis={} db={}",
+                    slot.getSlotId(), applied, slot.getVersion());
+            return false;
+        }
+        Object metaCapacity = redis.opsForHash().get(metaKey(slot.getSlotId()), "capacity");
+        if (metaCapacity == null) {
+            return false;
+        }
+        int delta;
+        try {
+            delta = slot.getCapacity() - Integer.parseInt(metaCapacity.toString());
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        if (delta <= 0) {
+            return false;
+        }
+        applyCapacityDelta(slot.getSlotId(), buckets, splitDelta(delta, slot.getBucketCount()),
+                applied, slot.getVersion(), slot.getCapacity());
+        log.warn("追赶未完成增容 slotId={} delta={} version={}→{}",
+                slot.getSlotId(), delta, applied, slot.getVersion());
+        return true;
+    }
+
+    private boolean matchesDatabaseRemaining(Slot slot, List<SlotBucket> buckets,
+                                             List<String> values) {
+        if (buckets.size() != slot.getBucketCount() || values.size() != slot.getBucketCount()) {
+            return false;
+        }
+        for (int i = 0; i < slot.getBucketCount(); i++) {
+            SlotBucket bucket = buckets.get(i);
+            if (!Integer.valueOf(i).equals(bucket.getBucketNo()) || values.get(i) == null) {
+                return false;
+            }
+            try {
+                if (Integer.parseInt(values.get(i)) != bucket.getTotal() - bucket.getOccupied()) {
+                    return false;
+                }
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void validateBuckets(Slot slot, List<SlotBucket> buckets) {
+        if (buckets.size() != slot.getBucketCount()) {
+            throw new IllegalStateException("slot_bucket 数量不完整 slotId=" + slot.getSlotId());
+        }
+        for (int i = 0; i < slot.getBucketCount(); i++) {
+            if (!Integer.valueOf(i).equals(buckets.get(i).getBucketNo())) {
+                throw new IllegalStateException("slot_bucket 编号不连续 slotId=" + slot.getSlotId());
+            }
+        }
+    }
+
+    private void applyCapacityDelta(long slotId, List<SlotBucket> buckets, List<Integer> deltas,
+                                    int expectedVersion, int newVersion, int newCapacity) {
+        List<Object> keys = buckets.stream()
+                .map(b -> (Object) bucketKey(slotId, b.getBucketNo())).toList();
+        List<Object> argv = new ArrayList<>(deltas.size() + 4);
+        for (Integer delta : deltas) {
+            argv.add(Integer.toString(delta));
+        }
+        argv.add(Long.toString(slotId));
+        argv.add(Integer.toString(expectedVersion));
+        argv.add(Integer.toString(newVersion));
+        argv.add(Integer.toString(newCapacity));
+        Long result = lua.evalLong(LuaScripts.Script.INCR, keys, argv.toArray());
+        if (!Long.valueOf(1L).equals(result) && !Long.valueOf(2L).equals(result)) {
+            throw new IllegalStateException("Redis 容量 version 不匹配 slotId=" + slotId);
+        }
+    }
+
+    private RLock capacityLock(long slotId) {
+        return redisson.getLock("lock:slot:capacity:" + slotId);
+    }
+
+    private static String capacityVersionKey(long slotId) {
+        return "slot:capacity:version:" + slotId;
+    }
+
     private void cacheMeta(Slot slot) {
         Map<String, String> meta = new LinkedHashMap<>();
         meta.put("released", Integer.toString(slot.getReleased()));
@@ -433,48 +573,12 @@ public class SlotService {
         return buckets;
     }
 
-    private static void validateTemplate(Integer hour, Integer duration, Integer capacity,
-                                         Integer buckets, Integer releaseOffset) {
-        if (hour == null || hour < 0 || hour > 23 || duration == null || duration <= 0
-                || capacity == null || capacity <= 0 || buckets == null || buckets <= 0
-                || capacity < buckets || releaseOffset == null || releaseOffset >= hour * 60) {
-            throw BizException.of(ErrorCode.TEMPLATE_INVALID);
-        }
-    }
-
-    private static void apply(SlotTemplate target, TemplateInput input) {
-        target.setSlotHour(input.slotHour());
-        target.setDurationMin(input.durationMin());
-        target.setCapacity(input.capacity());
-        target.setBucketCount(input.bucketCount());
-        target.setReleaseOffsetMin(input.releaseOffsetMin());
-    }
-
     private static String metaKey(long slotId) {
         return "slot:meta:" + slotId;
     }
 
     private static String bucketKey(long slotId, int bucketNo) {
         return "slot:" + slotId + ":b:" + bucketNo;
-    }
-
-    public record TemplateInput(Integer slotHour, Integer durationMin, Integer capacity,
-                                Integer bucketCount, Integer releaseOffsetMin, boolean enabled) {
-    }
-
-    public record TemplatePatch(Integer slotHour, Integer durationMin, Integer capacity,
-                                Integer bucketCount, Integer releaseOffsetMin, Boolean enabled,
-                                Integer version) {
-    }
-
-    public record TemplateView(Long templateId, Integer slotHour, Integer durationMin,
-                               Integer capacity, Integer bucketCount, Integer releaseOffsetMin,
-                               boolean enabled, Integer version) {
-        static TemplateView from(SlotTemplate template) {
-            return new TemplateView(template.getTemplateId(), template.getSlotHour(),
-                    template.getDurationMin(), template.getCapacity(), template.getBucketCount(),
-                    template.getReleaseOffsetMin(), template.getEnabled() == 1, template.getVersion());
-        }
     }
 
     public record SlotView(Long slotId, LocalDate slotDate, Integer slotHour, Integer durationMin,

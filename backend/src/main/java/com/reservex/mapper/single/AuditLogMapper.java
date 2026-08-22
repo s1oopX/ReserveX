@@ -14,6 +14,8 @@ import java.util.List;
  */
 public interface AuditLogMapper extends BaseMapper<AuditLog> {
 
+    int insertIgnore(AuditLog audit);
+
     /** 管理端审计查询:按动作类型翻页。 */
     List<AuditLog> selectByAction(@Param("action") String action,
                                   @Param("limit") Integer limit);

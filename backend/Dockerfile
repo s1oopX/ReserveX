@@ -1,24 +1,19 @@
-# syntax=docker/dockerfile:1
 FROM maven:3.9.9-eclipse-temurin-21-alpine AS build
 WORKDIR /build
 
 COPY pom.xml ./
 COPY src ./src
-RUN --mount=type=cache,target=/root/.m2 mvn -B -DskipTests package
+RUN mvn -B -DskipTests package
 
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
-# §7.2:容器默认 UTC。compose 也设了 TZ,这里再钉一次 —— 单独 docker run 时也对
+# JVM 自带时区数据库；避免为了健康检查在每次构建时联网安装系统包。
 ENV TZ=Asia/Shanghai
-RUN apk add --no-cache tzdata curl \
- && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
- && echo "Asia/Shanghai" > /etc/timezone
 
 # 不用 root 跑应用
 RUN addgroup -S app && adduser -S -G app app
-COPY --from=build /build/target/reservex-backend.jar app.jar
-RUN chown -R app:app /app
+COPY --from=build --chown=app:app /build/target/reservex-backend.jar app.jar
 USER app
 
 EXPOSE 8080

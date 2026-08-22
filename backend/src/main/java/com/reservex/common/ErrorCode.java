@@ -10,6 +10,9 @@ public enum ErrorCode {
 
     OK("成功"),
     BAD_REQUEST("请求参数不合法"),
+    PRECONDITION_REQUIRED("缺少 If-Match 条件"),
+    PRECONDITION_FAILED("资源版本已变化,请刷新后重试"),
+    STATE_CONFLICT("资源状态已变化,请刷新后重试"),
     NOT_FOUND("资源不存在"),
     UNAUTHORIZED("未登录或登录已过期"),
     FORBIDDEN("无权限"),
@@ -25,20 +28,22 @@ public enum ErrorCode {
     QUOTA_USED("您今天已有预约"),
     CAPTCHA_REQUIRED("请先完成图形验证"),
     CAPTCHA_INVALID("验证码错误,请重试"),
-    RATE_LIMITED("预约人数较多,请稍后重试"),
+    RATE_LIMITED("请求过于频繁,请稍后重试"),
     SERVICE_DEGRADED("系统繁忙,请稍后重试"),
 
     RESERVATION_NOT_FOUND("预约不存在"),
     RESERVATION_CONFIRMING("预约正在确认,请稍候重试"),
+    RESERVATION_NOT_STARTED("预约场次尚未开始"),
     ALREADY_CANCELLED("已取消,无法操作"),
     ALREADY_EXPIRED("已过期,无法操作"),
     ALREADY_VERIFIED("该预约已核销"),
     QR_INVALID("无效二维码"),
     QR_EXPIRED("二维码已过期,请刷新"),
 
-    EMAIL_TAKEN("邮箱已注册"),
-    PHONE_TAKEN("手机号已注册"),
+    REGISTRATION_CONFLICT("邮箱、手机号或身份证已注册"),
+    REGISTRATION_CODE_INVALID("邮箱验证码错误或已过期"),
     LOGIN_FAILED("邮箱或密码错误"),
+    REFRESH_IN_PROGRESS("凭证正在刷新,请稍候重试"),
     ACCOUNT_BANNED("账号已封禁,请联系管理员"),
     PASSWORD_CHANGE_REQUIRED("首次登录请先修改密码");
 

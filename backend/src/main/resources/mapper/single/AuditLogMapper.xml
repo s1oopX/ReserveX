@@ -22,6 +22,15 @@
         <result property="createAt"     column="create_at"/>
     </resultMap>
 
+    <insert id="insertIgnore">
+        INSERT IGNORE INTO `audit_log`
+          (`id`, `operator_type`, `operator_id`, `action`, `target_type`, `target_id`,
+           `before`, `after`, `request_id`, `create_at`)
+        VALUES
+          (#{id}, #{operatorType}, #{operatorId}, #{action}, #{targetType}, #{targetId},
+           #{before}, #{after}, #{requestId}, #{createAt})
+    </insert>
+
     <!--
       审计查询。
       ⚠️ before/after 是 MySQL 保留字,必须反引号 —— 不加会报语法错误,

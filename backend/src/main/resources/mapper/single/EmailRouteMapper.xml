@@ -36,7 +36,11 @@
         SELECT `email`, `user_id`, `create_at`
         FROM `email_route`
         WHERE `create_at` &lt; #{cutoff}
-        ORDER BY `create_at`
+        <if test="afterCreateAt != null">
+          AND (`create_at` &gt; #{afterCreateAt}
+               OR (`create_at` = #{afterCreateAt} AND `email` &gt; #{afterEmail}))
+        </if>
+        ORDER BY `create_at`, `email`
         LIMIT #{limit}
     </select>
 

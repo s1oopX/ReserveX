@@ -5,7 +5,7 @@ import com.reservex.entity.StateLog;
 import org.apache.ibatis.annotations.Param;
 
 /**
- * 事务日志 Mapper(**单库**)。四个写入点全部在这里(03 §6.1)。
+ * 事务日志 Mapper(**单库**)。状态推进与人工回滚仲裁全部在这里。
  *
  * <p>⚠️ <b>写入时机的约定不能随意改</b>:Try 在消费者**落库前**写(而非抢号热路径),
  * 正因如此窗口期取消先到时 DB 里没有这行 → 必须用下面的 {@link #insertOrCancel}
@@ -42,4 +42,13 @@ public interface StateLogMapper extends BaseMapper<StateLog> {
      * 否则会造出一笔"已被回滚却仍存在"的预约而 Redis 余量已回补 → 超卖。
      */
     int insertOrCancel(@Param("xid") String xid, @Param("branchId") String branchId);
+
+    /** 回滚 Lua 已完成后的专用收口,只允许 status=4→3。 */
+    int completeRollback(@Param("xid") String xid);
+
+    /** 人工已 claim stuck 后接管既有 Cancel/Expire 占位。 */
+    int promoteRollbackClaim(@Param("xid") String xid);
+
+    /** 人工回滚抢占。status=4 只表示补偿处理中，已有 Try/Confirm/Cancel 时不得覆盖。 */
+    int insertRollbackClaim(@Param("xid") String xid, @Param("branchId") String branchId);
 }

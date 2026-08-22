@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.reservex.mapper.sharding.ReservationTransitionOutboxMapper">
+    <resultMap id="BaseResultMap" type="com.reservex.entity.ReservationTransitionOutbox">
+        <id property="transitionId" column="transition_id"/>
+        <result property="userId" column="user_id"/>
+        <result property="reservationNo" column="reservation_no"/>
+        <result property="eventType" column="event_type"/>
+        <result property="operatorType" column="operator_type"/>
+        <result property="operatorId" column="operator_id"/>
+        <result property="method" column="method"/>
+        <result property="qrNonce" column="qr_nonce"/>
+        <result property="manual" column="manual"/>
+        <result property="verificationId" column="verification_id"/>
+        <result property="auditId" column="audit_id"/>
+        <result property="requestId" column="request_id"/>
+        <result property="eventTime" column="event_time"/>
+        <result property="createAt" column="create_at"/>
+    </resultMap>
+
+    <sql id="Cols">
+        `transition_id`, `user_id`, `reservation_no`, `event_type`, `operator_type`,
+        `operator_id`, `method`, `qr_nonce`, `manual`, `verification_id`, `audit_id`,
+        `request_id`, `event_time`, `create_at`
+    </sql>
+
+    <select id="selectPending" resultMap="BaseResultMap">
+        SELECT <include refid="Cols"/>
+        FROM `reservation_transition_outbox`
+        ORDER BY `create_at`, `transition_id`
+        LIMIT #{limit}
+    </select>
+
+    <delete id="deletePending">
+        DELETE FROM `reservation_transition_outbox`
+        WHERE `transition_id` = #{transitionId}
+          AND `user_id` = #{userId}
+    </delete>
+</mapper>

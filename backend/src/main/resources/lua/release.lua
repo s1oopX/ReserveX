@@ -21,6 +21,7 @@
 -- ARGV[1..N] = 各桶初始值,与 KEYS 一一对应
 -- ARGV[N+1]  = slot_id
 -- ARGV[N+2]  = bucket_ttl(秒, = slot_date 当日结束 − now)
+-- ARGV[N+3]  = capacity version
 -- ============================================================================
 
 local n = #KEYS
@@ -28,4 +29,5 @@ for i = 1, n do
     redis.call('SET', KEYS[i], ARGV[i], 'EX', ARGV[n + 2])
 end
 redis.call('DEL', 'slot:full:'..ARGV[n + 1])   -- 清约满标记(此时段开始可约了)
+redis.call('SET', 'slot:capacity:version:'..ARGV[n + 1], ARGV[n + 3], 'EX', ARGV[n + 2])
 return 1

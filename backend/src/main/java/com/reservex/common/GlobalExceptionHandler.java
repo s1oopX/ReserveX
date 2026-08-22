@@ -4,16 +4,27 @@ import cn.dev33.satoken.exception.NotLoginException;
 import cn.dev33.satoken.exception.NotRoleException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.RedisSystemException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * 全局异常 → 响应包(07 §3·补)。
@@ -36,25 +47,71 @@ public class GlobalExceptionHandler {
         // 预期内失败,不打栈:它们量大(库存不足/限流)且无诊断价值
         log.debug("业务异常 code={} msg={}", e.getErrorCode().getCode(), e.getMessage());
         HttpStatus status = switch (e.getErrorCode()) {
+            case BAD_REQUEST, CAPTCHA_INVALID, REGISTRATION_CODE_INVALID -> HttpStatus.BAD_REQUEST;
+            case PRECONDITION_REQUIRED -> HttpStatus.PRECONDITION_REQUIRED;
+            case PRECONDITION_FAILED -> HttpStatus.PRECONDITION_FAILED;
+            case STATE_CONFLICT, PASSWORD_CHANGE_REQUIRED, SLOT_NOT_RELEASED, SLOT_ENDED,
+                    SLOT_RELEASED_LOCKED, RESERVATION_NOT_STARTED -> HttpStatus.CONFLICT;
             case UNAUTHORIZED -> HttpStatus.UNAUTHORIZED;
             case FORBIDDEN -> HttpStatus.FORBIDDEN;
-            case NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case NOT_FOUND, SLOT_NOT_FOUND, RESERVATION_NOT_FOUND -> HttpStatus.NOT_FOUND;
             case RATE_LIMITED -> HttpStatus.TOO_MANY_REQUESTS;
-            default -> HttpStatus.OK;
+            case SERVICE_DEGRADED -> HttpStatus.SERVICE_UNAVAILABLE;
+            case LOGIN_FAILED -> HttpStatus.UNAUTHORIZED;
+            case ACCOUNT_BANNED -> HttpStatus.FORBIDDEN;
+            case REGISTRATION_CONFLICT, SLOT_FULL, QUOTA_USED,
+                    RESERVATION_CONFIRMING, REFRESH_IN_PROGRESS,
+                    ALREADY_CANCELLED, ALREADY_EXPIRED,
+                    ALREADY_VERIFIED -> HttpStatus.CONFLICT;
+            default -> HttpStatus.BAD_REQUEST;
         };
-        return ResponseEntity.status(status).body(Result.fail(e.getErrorCode(), e.getMessage()));
+        var response = ResponseEntity.status(status);
+        if (status == HttpStatus.UNAUTHORIZED) {
+            response.header(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
+        }
+        return response.body(Result.fail(e.getErrorCode(), e.getMessage()));
     }
 
     @ExceptionHandler({MethodArgumentNotValidException.class, BindException.class,
             HttpMessageNotReadableException.class})
-    public Result<Void> onInvalidRequest(Exception e) {
+    public ResponseEntity<Result<Void>> onInvalidRequest(Exception e) {
         log.debug("参数校验失败: {}", e.getMessage());
-        return Result.fail(ErrorCode.BAD_REQUEST);
+        return ResponseEntity.badRequest().body(Result.fail(ErrorCode.BAD_REQUEST));
+    }
+
+    @ExceptionHandler({MethodArgumentTypeMismatchException.class,
+            MissingServletRequestParameterException.class})
+    public ResponseEntity<Result<Void>> onRequestShape(Exception e) {
+        return ResponseEntity.badRequest().body(Result.fail(ErrorCode.BAD_REQUEST));
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<Result<Void>> onMethodNotSupported(HttpRequestMethodNotSupportedException e) {
+        var response = ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED);
+        if (e.getSupportedHttpMethods() != null) {
+            Set<HttpMethod> allowed = new LinkedHashSet<>(e.getSupportedHttpMethods());
+            if (allowed.contains(HttpMethod.GET)) {
+                allowed.add(HttpMethod.HEAD);
+            }
+            allowed.add(HttpMethod.OPTIONS);
+            response.allow(allowed.toArray(HttpMethod[]::new));
+            if (allowed.contains(HttpMethod.PATCH)) {
+                response.header(HttpHeaders.ACCEPT_PATCH, "application/json");
+            }
+        }
+        return response.body(Result.fail(ErrorCode.BAD_REQUEST, "不支持的 HTTP 方法"));
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<Result<Void>> onMediaTypeNotSupported(HttpMediaTypeNotSupportedException e) {
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+                .body(Result.fail(ErrorCode.BAD_REQUEST, "不支持的 Content-Type"));
     }
 
     @ExceptionHandler(NotLoginException.class)
     public ResponseEntity<Result<Void>> onNotLogin(NotLoginException e) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .header(HttpHeaders.WWW_AUTHENTICATE, "Bearer")
                 .body(Result.fail(ErrorCode.UNAUTHORIZED));
     }
 
@@ -74,23 +131,24 @@ public class GlobalExceptionHandler {
      * {@link BizException};走到这里说明有一处漏了转换,故打 WARN 留痕。
      */
     @ExceptionHandler(DuplicateKeyException.class)
-    public Result<Void> onDuplicateKey(DuplicateKeyException e) {
-        log.warn("未被业务层转换的唯一键冲突,请补 catch: {}", e.getMostSpecificCause().getMessage());
-        return Result.fail(ErrorCode.BAD_REQUEST);
+    public ResponseEntity<Result<Void>> onDuplicateKey(DuplicateKeyException e) {
+        // MySQL 的重复键文本可能包含邮箱、手机号或证件 hash，禁止原样进日志。
+        log.warn("未被业务层转换的唯一键冲突,请补 catch: type={}",
+                e.getMostSpecificCause().getClass().getSimpleName());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Result.fail(ErrorCode.STATE_CONFLICT));
     }
 
-    /**
-     * Redis 故障三形态(06 §6.1):连不上、命令报错、内存打满(写命令返 OOM)。
-     * 三者都归降级,而不是 500 —— 因为对用户的正确指引是"稍后重试",不是"系统坏了"。
-     */
-    @ExceptionHandler({RedisConnectionFailureException.class, RedisSystemException.class})
-    public Result<Void> onRedisDown(RuntimeException e) {
-        log.error("Redis 不可用,链路降级: {}", e.getMessage());
-        return Result.fail(ErrorCode.SERVICE_DEGRADED);
+    /** 数据存储连接、命令或查询超时都归降级,用户可稍后重试。 */
+    @ExceptionHandler({RedisConnectionFailureException.class, RedisSystemException.class,
+            QueryTimeoutException.class})
+    public ResponseEntity<Result<Void>> onDataStoreDown(RuntimeException e) {
+        log.error("数据存储不可用,链路降级: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(Result.fail(ErrorCode.SERVICE_DEGRADED));
     }
 
-    @ExceptionHandler(NoResourceFoundException.class)
-    public ResponseEntity<Result<Void>> onNotFound(NoResourceFoundException e) {
+    @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
+    public ResponseEntity<Result<Void>> onNotFound(Exception e) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(Result.fail(ErrorCode.NOT_FOUND));
     }

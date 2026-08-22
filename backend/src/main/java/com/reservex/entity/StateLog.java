@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
  * 就能算出 xid,不必先查表 —— 随机 xid 会让"回滚时找不到自己的日志行"成为可能。
  *
  * <p>⚠️ <b>本表曾经"有表无写入点"</b> —— 这是本项目反复出现的同一种病:
- * 决策存在,承载它的定义不存在。四个写入点现已定死(03 §6.1),缺任一个,
+ * 决策存在,承载它的定义不存在。状态写入点现已集中在 StateLogMapper,缺任一个,
  * 对应的那类故障就没有凭据可查:
  * <ol>
  *   <li><b>消费者落库前</b>写 {@code status=1}(Try)。这行是"我准备落库"的痕迹;</li>
@@ -24,6 +24,7 @@ import java.time.LocalDateTime;
  *       此时直接插一行 {@code status=3}。<b>不插会导致悬挂</b> ——
  *       随后姗姗来迟的 Try 看不到任何回滚痕迹,会照常落库,
  *       造出一笔"已被回滚过却仍存在"的预约,而 Redis 余量已回补 → 超卖。</li>
+ *   <li><b>人工回滚仲裁</b>:先插 {@code status=4};已存在 Try/终态时不得覆盖。</li>
  * </ol>
  *
  * <p>⚠️ {@code branch_id} 单分支设计({@code = reservation_no}),故 {@code uk_xid_branch}
@@ -40,7 +41,7 @@ public class StateLog {
     /** {@code = reservation_no}(单分支)。 */
     private String branchId;
 
-    /** 0 初始,1 Try,2 Confirm,3 Cancel。 */
+    /** 0 初始,1 Try,2 Confirm,3 Cancel,4 人工回滚处理中。 */
     private Integer status;
 
     private LocalDateTime createAt;

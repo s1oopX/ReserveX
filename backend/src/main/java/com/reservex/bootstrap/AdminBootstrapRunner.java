@@ -66,14 +66,14 @@ public class AdminBootstrapRunner implements ApplicationRunner {
         }
 
         // ① 按分片键查。查不到就 fail-fast,**不自建** ——
-        //    自建会掩盖真正的问题:initdb 只在数据目录为空时执行一次,
-        //    查不到几乎总是意味着开发者的机器不干净,需要 `docker compose down -v`。
+        //    自建会掩盖真正的问题:initdb 只在数据目录为空时执行一次。
+        //    现有卷先检查 mysql-migrate 和 seed/迁移状态；不要删除业务卷排查。
         User admin = userMapper.selectById(cfg.getUserId());
         if (admin == null) {
             throw new IllegalStateException(
                     "超管行不存在(user_id=" + cfg.getUserId() + ")。两种可能:"
                             + "① 02-seed.sql 没执行 —— initdb 只在数据目录为空时跑一次,"
-                            + "改了 SQL 后必须 `docker compose down -v` 重来;"
+                            + "现有卷请检查 mysql-migrate/迁移状态，禁止用 `docker compose down -v` 删除业务数据;"
                             + "② seed 把行插进了错的库 —— user_id=" + cfg.getUserId()
                             + " 时 " + cfg.getUserId() + " mod 2 = " + (cfg.getUserId() % 2)
                             + ",行必须在 reservex_ds" + (cfg.getUserId() % 2) + "(08 §4.1 坑 1)");
@@ -106,7 +106,8 @@ public class AdminBootstrapRunner implements ApplicationRunner {
 
         // 条件里带哨兵值 → 并发/重复启动下只有一个能成功,天然幂等
         int updated = userMapper.bootstrapAdminPassword(
-                cfg.getUserId(), PASSWORD_SENTINEL, bcrypt, time.now());
+                cfg.getUserId(), PASSWORD_SENTINEL, bcrypt,
+                cfg.isForceChangeOnFirstLogin() ? 1 : 0, time.now());
         if (updated == 0) {
             log.info("超管密码已被并发引导,跳过");
             return;
@@ -128,6 +129,11 @@ public class AdminBootstrapRunner implements ApplicationRunner {
 
         log.warn("超管初始密码已写入(user_id={}, email={})。"
                         + "该密码来自 .env,团队可见 —— 首次登录后请立即修改",
-                cfg.getUserId(), cfg.getEmail());
+                cfg.getUserId(), maskEmail(cfg.getEmail()));
+    }
+
+    private static String maskEmail(String email) {
+        int at = email == null ? -1 : email.indexOf('@');
+        return at <= 1 ? "***" : email.charAt(0) + "***" + email.substring(at);
     }
 }
