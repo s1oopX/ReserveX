@@ -1,7 +1,6 @@
 # ReserveX 一键起全栈(08 §四)
 # 演示:docker compose up --build   →  http://localhost:8080
-# 重置(改了 DDL 必须):docker compose down -v && docker compose up --build
-#   ⚠️ docker-entrypoint-initdb.d 只在数据目录为空时执行一次,不 down -v 则改了 schema 也不重跑。
+# 新库由 initdb 初始化；已有卷由 mysql-migrate 在 backend 启动前执行幂等迁移。
 # 注:不写 version: —— Compose v2+ 已废弃该字段,保留会输出 obsolete 警告。
 
 services:
@@ -15,8 +14,12 @@ services:
       - "--collation-server=utf8mb4_0900_ai_ci"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: reservex_single
+      MYSQL_USER: reservex_app
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD}
       TZ: Asia/Shanghai
-    ports: ["3306:3306"]
+    expose: ["3306"]
+    networks: [data]
     volumes:
       # 按文件名字典序执行:先建库建表,再灌种子(§4.1)
       - ./docker/mysql/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
@@ -36,7 +39,7 @@ services:
     restart: unless-stopped
     # §7.3:桶余量/occupy/dup/slot:full/pending 是**库存真理源**,不是缓存
     #   noeviction 是硬约束:配成 allkeys-* 会让库存被静默逐出,且没有任何报错
-    #   appendfsync everysec:"最多丢 1s 写"这句诚实口径的量化依据
+    #   库存写必须在 Redis 回复前 fsync；否则 MQ 已落盘而 occupy/扣库存仍可能丢失
     command:
       - "redis-server"
       - "--requirepass"
@@ -44,7 +47,7 @@ services:
       - "--appendonly"
       - "yes"
       - "--appendfsync"
-      - "everysec"
+      - "always"
       - "--maxmemory"
       - "1gb"
       - "--maxmemory-policy"
@@ -52,6 +55,7 @@ services:
       - "--save"
       - "900 1"
     expose: ["6379"]                        # 只在容器网内可见,库存真理源不裸奔在宿主 6379
+    networks: [data]
     volumes: [redis-data:/data]
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
@@ -60,30 +64,94 @@ services:
       retries: 20
 
   rmqnamesrv:
-    image: apache/rocketmq:5.3.1
+    image: reservex-rocketmq:5.5.0-secured
+    build: ./docker/rocketmq
     restart: unless-stopped
     command: sh mqnamesrv
     expose: ["9876"]
+    networks: [data]
     environment:
       TZ: Asia/Shanghai
+      # NameServer 只保存路由元数据，单节点无需默认 1GiB 堆。
+      JAVA_OPT_EXT: "-Xms256m -Xmx256m -Xmn128m"
 
   rmqbroker:
-    image: apache/rocketmq:5.3.1
+    image: reservex-rocketmq:5.5.0-secured
+    build: ./docker/rocketmq
+    user: root
     restart: unless-stopped
+    stop_grace_period: 60s
     depends_on: [rmqnamesrv]
-    command: sh mqbroker -n rmqnamesrv:9876 --enable-proxy
-    expose: ["10909", "10911", "8081"]      # proxy 8081,不占宿主 8080
+    command: sh /init/broker-entrypoint.sh
+    expose: ["10909", "10911"]
+    networks: [data]
+    volumes:
+      - ./docker/rocketmq/broker-entrypoint.sh:/init/broker-entrypoint.sh:ro
+      - ./docker/rocketmq/broker.conf:/init/broker.conf:ro
+      - rocketmq-store:/home/rocketmq/store
     environment:
       TZ: Asia/Shanghai
+      # 单 broker 开发/验收默认 512MiB；生产按吞吐与堆外内存显式上调。
+      HEAP_OPTS: "${ROCKETMQ_HEAP_OPTS:--Xms512m -Xmx512m -Xmn256m -XX:MaxDirectMemorySize=512m}"
+      ROCKETMQ_APP_SECRET_KEY: ${ROCKETMQ_APP_SECRET_KEY}
+      ROCKETMQ_ADMIN_SECRET_KEY: ${ROCKETMQ_ADMIN_SECRET_KEY}
 
-  # §4.4:一次性建 5 个 topic。autoCreateTopicEnable 默认 true 但队列数只有个位数,
+  # §4.4:一次性建 3 个业务 topic + 3 个 DLQ topic。
   #   会把 persistence 的 20 个消费线程卡死在队列数上(现象:线程调大了延迟没降)
   rmq-init:
-    image: apache/rocketmq:5.3.1
+    image: reservex-rocketmq:5.5.0-secured
+    build: ./docker/rocketmq
     depends_on: [rmqbroker]
     restart: "no"                           # 跑完就该退出;配 unless-stopped 会无限重启并刷满日志
     entrypoint: ["/bin/sh", "/init/topics.sh"]
     volumes: ["./docker/rocketmq/topics.sh:/init/topics.sh:ro"]
+    networks: [data]
+    environment:
+      ROCKETMQ_ADMIN_SECRET_KEY: ${ROCKETMQ_ADMIN_SECRET_KEY}
+
+  # Existing MySQL volumes do not run docker-entrypoint-initdb.d again. Apply
+  # each immutable migration once before the application starts.
+  mysql-migrate:
+    image: mysql:8.0
+    restart: "no"
+    depends_on:
+      mysql: { condition: service_healthy }
+    command:
+      - sh
+      - -c
+      - >-
+        set -eu;
+        mysql --protocol=TCP -hmysql -uroot -p"$${MYSQL_ROOT_PASSWORD}" -e "CREATE TABLE IF NOT EXISTS reservex_single.schema_migration (version VARCHAR(255) NOT NULL PRIMARY KEY, checksum CHAR(64) NULL, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)";
+        checksum_column=$$(mysql --protocol=TCP -hmysql -uroot -p"$${MYSQL_ROOT_PASSWORD}" -Nse "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='reservex_single' AND table_name='schema_migration' AND column_name='checksum'");
+        if [ "$${checksum_column}" = "0" ]; then
+          mysql --protocol=TCP -hmysql -uroot -p"$${MYSQL_ROOT_PASSWORD}" -e "ALTER TABLE reservex_single.schema_migration ADD COLUMN checksum CHAR(64) NULL AFTER version";
+        fi;
+        for migration in /migrations/*.sql; do
+          version=$$(basename "$${migration}");
+          checksum=$$(sha256sum "$${migration}" | cut -d ' ' -f 1);
+          applied=$$(mysql --protocol=TCP -hmysql -uroot -p"$${MYSQL_ROOT_PASSWORD}" -Nse "SELECT 1 FROM reservex_single.schema_migration WHERE version='$${version}' LIMIT 1");
+          if [ "$${applied}" = "1" ]; then
+            stored=$$(mysql --protocol=TCP -hmysql -uroot -p"$${MYSQL_ROOT_PASSWORD}" -Nse "SELECT COALESCE(checksum, '') FROM reservex_single.schema_migration WHERE version='$${version}'");
+            if [ -z "$${stored}" ]; then
+              mysql --protocol=TCP -hmysql -uroot -p"$${MYSQL_ROOT_PASSWORD}" -e "UPDATE reservex_single.schema_migration SET checksum='$${checksum}' WHERE version='$${version}' AND checksum IS NULL";
+            elif [ "$${stored}" != "$${checksum}" ]; then
+              echo "Migration checksum mismatch: $${version}" >&2;
+              exit 1;
+            fi;
+            echo "Skipping $${version}";
+            continue;
+          fi;
+          echo "Applying $${version}";
+          mysql --protocol=TCP -hmysql -uroot -p"$${MYSQL_ROOT_PASSWORD}" < "$${migration}";
+          mysql --protocol=TCP -hmysql -uroot -p"$${MYSQL_ROOT_PASSWORD}" -e "INSERT INTO reservex_single.schema_migration(version, checksum) VALUES ('$${version}', '$${checksum}')";
+        done;
+        mysql --protocol=TCP -hmysql -uroot -p"$${MYSQL_ROOT_PASSWORD}" -e "ALTER TABLE reservex_single.schema_migration MODIFY checksum CHAR(64) NOT NULL"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - ./docker/mysql/migrations:/migrations:ro
+      - ./docker/mysql/sharded-tables.sql:/opt/reservex/sharded-tables.sql:ro
+    networks: [data]
 
   # §4.5:前端产物注入命名卷。没有这个服务,Caddy 托管的是空目录 → 首页 404 而接口全正常
   frontend-build:
@@ -92,12 +160,14 @@ services:
     # 先删再拷:cp -r 只覆盖同名文件,改名后的旧 hash 资源会永久残留在卷里
     command: ["sh", "-c", "rm -rf /srv/frontend/* && cp -r /app/dist/. /srv/frontend/"]
     volumes: ["frontend-dist:/srv/frontend"]
+    networks: []
 
   backend:
     build: ./backend
     restart: unless-stopped                 # §7.4 的 ExitOnOutOfMemoryError 依赖它才成立
     depends_on:
       mysql: { condition: service_healthy }
+      mysql-migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       rmqbroker: { condition: service_started }
       rmq-init: { condition: service_completed_successfully }   # topic 先建好再起应用
@@ -105,34 +175,45 @@ services:
     #    直接暴露会让绕过 Caddy 的 /actuator/* 屏蔽规则成为可能(08 §五 红线 #35)。
     #    调试需要时用 docker compose exec 或临时加映射。
     expose: ["8080"]
+    networks: [edge, data]
     # §7.4:必须 > spring.lifecycle.timeout-per-shutdown-phase(30s)。
     #   默认 10s 会在 D6 消费者卡在阶段1↔阶段2(跨库无事务保护)时被 SIGKILL
     stop_grace_period: 45s
     environment:
       - SPRING_PROFILES_ACTIVE=prod
+      # prod 必须显式分配唯一 worker，禁止多实例静默共享 0 造成 Snowflake 撞号。
+      - WORKER_ID=${WORKER_ID:?WORKER_ID must be set explicitly (0..31)}
       - TZ=Asia/Shanghai
       - JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_APP_PASSWORD=${MYSQL_APP_PASSWORD}
       - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - ROCKETMQ_APP_SECRET_KEY=${ROCKETMQ_APP_SECRET_KEY}
       - QQ_SMTP_PASSWORD=${QQ_SMTP_PASSWORD}
       - AES_KEY=${AES_KEY}
       - QR_HMAC_KEY=${QR_HMAC_KEY}
       - ID_HASH_PEPPER=${ID_HASH_PEPPER}
       - JWT_SECRET=${JWT_SECRET}
       - ADMIN_INIT_PASSWORD=${ADMIN_INIT_PASSWORD}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
 
   caddy:
-    image: caddy:2.7
+    image: caddy:2.11.4
     restart: unless-stopped
     # ⚠️ 用 8080 会与 backend 冲突,用 80 在 Windows 上常被 Hyper-V 的
     #    "保留端口区间"(excludedportrange)占用 → bind 时报 access permissions 错。
-    #    演示用 8080 避开两者;生产部署改回 80 时同步改这里。
-    ports: ["8080:80"]
+    #    本配置仅供本机开发;生产必须由 TLS 入口反代,不可直接暴露此明文端口。
+    ports: ["127.0.0.1:8080:80"]
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - frontend-dist:/srv/frontend
+      - frontend-dist:/srv/frontend:ro
+    networks: [edge]
     depends_on:
-      backend: { condition: service_started }
+      backend: { condition: service_healthy }
       frontend-build: { condition: service_completed_successfully }
     environment:
       TZ: Asia/Shanghai
@@ -140,4 +221,10 @@ services:
 volumes:
   mysql-data:
   redis-data:
+  rocketmq-store:
   frontend-dist:
+
+networks:
+  edge:
+  data:
+    internal: true

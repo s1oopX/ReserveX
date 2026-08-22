@@ -15,7 +15,7 @@
 | `slot:full:{slotId}` | String | **10.1 Lua 内售罄时 SET**(§1.2)/ 10.2a DEL / 10.3 放号 DEL | 当日结束 | 约满标记(挡真售罄重查) |
 | `stats:bucket:{key}:hit` / `stats:borrow:{key}` | String | 10.1 INCR | — | 压测埋点 |
 | `rl:user:{id}` / `rl:slot:{slotId}` | (RRateLimiter) | 限流器 | — | Redis 限流第二层 |
-| Sa-Token 会话 | — | Sa-Token | access 2h / refresh 7d | 鉴权 |
+| Sa-Token 会话 | — | Sa-Token + Redis token mapping | access 30min / refresh 7d | 鉴权与即时撤销 |
 
 > ⚠️ 单飞重建锁**只用在 `slot:meta` 重建**(05 §二)。桶余量/`slot:full`/`dup` **不套单飞**——它们是原子写对象,套锁破坏 Lua 原子性。
 

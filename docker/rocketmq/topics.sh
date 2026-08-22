@@ -17,6 +17,26 @@
 # ============================================================================
 set -e
 
+: "${ROCKETMQ_ADMIN_SECRET_KEY:?ROCKETMQ_ADMIN_SECRET_KEY is required}"
+if [ "${#ROCKETMQ_ADMIN_SECRET_KEY}" -lt 32 ]; then
+  echo "[rmq-init] admin secret must be at least 32 characters." >&2
+  exit 1
+fi
+case "${ROCKETMQ_ADMIN_SECRET_KEY}" in
+  *[!A-Za-z0-9]*)
+    echo "[rmq-init] admin secret must be alphanumeric." >&2
+    exit 1
+    ;;
+esac
+
+umask 077
+TOOLS_FILE="${ROCKETMQ_HOME}/conf/tools.yml"
+trap 'rm -f "${TOOLS_FILE}"' EXIT
+cat > "${TOOLS_FILE}" <<EOF
+accessKey: ReserveXAdmin
+secretKey: ${ROCKETMQ_ADMIN_SECRET_KEY}
+EOF
+
 NAMESRV="rmqnamesrv:9876"
 CLUSTER="DefaultCluster"
 
@@ -45,11 +65,10 @@ create_topic() {
 create_topic reservation-created 8
 # 补偿回滚:低频(只在落库失败时)
 create_topic compensate-rollback 4
-# 到场提醒:定时消息,valid_until - 30min 触发
-create_topic reminder 4
 # 超时关单:定时消息
 create_topic timeout 4
-# 场次放号:靠选主执行,并发无意义
-create_topic slot-release 2
+create_topic "%DLQ%cg-persistence" 1
+create_topic "%DLQ%cg-rollback" 1
+create_topic "%DLQ%cg-timeout" 1
 
 echo "[rmq-init] all topics ready."

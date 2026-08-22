@@ -1,6 +1,6 @@
 -- ============================================================================
 -- 抢号压测脚本(09 §一)。wrk2 用法:
---   wrk -t8 -c500 -d60s -R2000 -s scripts/grab.lua http://localhost/api/reservation/grab
+--   wrk -t8 -c500 -d60s -R2000 -s scripts/grab.lua http://localhost:8080/api/reservations
 --
 -- ⚠️ 必须先准备 token 池:压测前用注册接口批量建号并登录,把 access token
 --    一行一个写进 tokens.txt。**不要在压测里现登录** —— 那样测的是登录性能,
@@ -9,8 +9,8 @@
 -- ⚠️ 一人一证一天一约(M6)意味着**每个 token 只能成功一次**。所以:
 --    ① token 池规模必须 ≥ 期望的成功预约数,否则后续请求全返 QUOTA_USED,
 --       测出来的"QPS"其实是判重路径的 QPS,不是抢号路径的;
---    ② 每轮压测前要 `docker compose down -v` 重置,否则第二轮全是 QUOTA_USED。
---    这条是压测结果最容易被自己骗的地方。
+--    ② 每轮使用独立压测环境或新 Compose project 重置数据；严禁对业务环境执行 down -v。
+--       否则第二轮全是 QUOTA_USED，这条是压测结果最容易被自己骗的地方。
 -- ============================================================================
 
 local tokens = {}
@@ -53,8 +53,11 @@ function request()
    local idx = ((thread_offset + counter) % token_count) + 1
 
    wrk.method = "POST"
+   wrk.headers["Accept"] = "application/json"
    wrk.headers["Content-Type"] = "application/json"
-   wrk.headers["Authorization"] = tokens[idx]
+   local token = tokens[idx]
+   wrk.headers["Authorization"] = string.match(token, "^Bearer%s+") and token
+      or "Bearer " .. token
    -- slotId 用字符串:它是 Snowflake(19 位),JSON 里写成数字会被某些解析器
    -- 转成 double 而丢精度 —— 与 07 §3·补·4 前端那条是同一个坑
    wrk.body = string.format('{"slotId":"%s"}', slot_id)
@@ -62,16 +65,15 @@ function request()
    return wrk.format()
 end
 
--- 分码统计。只看 HTTP 200 会把"成功抢到"与"已约满/降级"混成一个数字,
--- 而这三者的区别正是压测要看的东西(09 §三 安全水位判据)
+-- 按 JSON 业务码统计；HTTP 状态只作为非 JSON 响应的兜底分类。
 local codes = {}
 
 function response(status, headers, body)
-   if status ~= 200 then
+   local code = string.match(body, '"code"%s*:%s*"([A-Z_]+)"')
+   if not code then
       codes["HTTP_" .. status] = (codes["HTTP_" .. status] or 0) + 1
       return
    end
-   local code = string.match(body, '"code"%s*:%s*"([A-Z_]+)"') or "PARSE_FAIL"
    codes[code] = (codes[code] or 0) + 1
 end
 
