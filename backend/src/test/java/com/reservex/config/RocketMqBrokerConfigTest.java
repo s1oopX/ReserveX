@@ -27,6 +27,9 @@ class RocketMqBrokerConfigTest {
         assertThat(entrypoint).contains("AUTH_CONFIG_DIR=\"/home/rocketmq/store/config\"");
         assertThat(entrypoint).contains(
                 "rm -rf \"${AUTH_CONFIG_DIR}/users\" \"${AUTH_CONFIG_DIR}/acls\"");
+        assertThat(entrypoint).contains("reservation-created=ALL");
+        assertThat(entrypoint).contains("%DLQ%cg-persistence=ALL");
+        assertThat(entrypoint).doesNotContain("reservation-created=PUB|SUB");
 
         String compose = Files.readString(findRepositoryFile("docker-compose.yml"));
         assertThat(compose).contains("WORKER_ID=${WORKER_ID:?WORKER_ID must be set explicitly (0..31)}");

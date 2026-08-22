@@ -4,12 +4,20 @@ import com.reservex.common.BizException;
 import com.reservex.common.ErrorCode;
 import com.reservex.common.TimeSupport;
 import com.reservex.entity.DeadLetterMessage;
+import com.reservex.entity.AuditLog;
+import com.reservex.id.IdGenerator;
+import com.reservex.mapper.single.AuditLogMapper;
 import com.reservex.mapper.single.DeadLetterMessageMapper;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -25,14 +33,36 @@ public class DeadLetterService {
             "cg-timeout", "timeout");
 
     private final DeadLetterMessageMapper mapper;
+    private final AuditLogMapper auditLogMapper;
+    private final IdGenerator idGenerator;
     private final RocketMQTemplate rocketMQ;
     private final TimeSupport time;
+    private final TransactionTemplate singleTx;
 
-    public DeadLetterService(DeadLetterMessageMapper mapper, RocketMQTemplate rocketMQ,
-                             TimeSupport time) {
+    @Autowired
+    public DeadLetterService(DeadLetterMessageMapper mapper, AuditLogMapper auditLogMapper,
+                             IdGenerator idGenerator, RocketMQTemplate rocketMQ,
+                             TimeSupport time,
+                             @Qualifier("singleTxManager") PlatformTransactionManager singleTxManager) {
         this.mapper = mapper;
+        this.auditLogMapper = auditLogMapper;
+        this.idGenerator = idGenerator;
         this.rocketMQ = rocketMQ;
         this.time = time;
+        this.singleTx = singleTxManager == null ? null : new TransactionTemplate(singleTxManager);
+    }
+
+    /** Test-only compatibility constructor; production uses the qualified single-db transaction manager. */
+    public DeadLetterService(DeadLetterMessageMapper mapper, AuditLogMapper auditLogMapper,
+                             IdGenerator idGenerator, RocketMQTemplate rocketMQ,
+                             TimeSupport time) {
+        this(mapper, auditLogMapper, idGenerator, rocketMQ, time, null);
+    }
+
+    /** Legacy test constructor kept to avoid coupling unit tests to Spring transaction wiring. */
+    public DeadLetterService(DeadLetterMessageMapper mapper, RocketMQTemplate rocketMQ,
+                             TimeSupport time) {
+        this(mapper, null, null, rocketMQ, time, null);
     }
 
     public void capture(String sourceGroup, MessageExt raw) {
@@ -79,9 +109,7 @@ public class DeadLetterService {
             mapper.releaseReplay(validMessageId);
             throw new BizException(ErrorCode.SERVICE_DEGRADED, "死信重放失败");
         }
-        if (mapper.completeReplay(validMessageId, time.now(), resolverId) != 1) {
-            throw new BizException(ErrorCode.SERVICE_DEGRADED, "死信已发送但状态未收口，请刷新核对");
-        }
+        completeReplayAndAudit(message, resolverId);
         return view(mapper.selectById(validMessageId));
     }
 
@@ -91,6 +119,52 @@ public class DeadLetterService {
             throw new BizException(ErrorCode.BAD_REQUEST, "死信消息标识不合法");
         }
         return messageId;
+    }
+
+    private void completeReplayAndAudit(DeadLetterMessage message, long resolverId) {
+        Runnable complete = () -> {
+            if (mapper.completeReplay(message.getMessageId(), time.now(), resolverId) != 1) {
+                throw new BizException(ErrorCode.SERVICE_DEGRADED, "死信已发送但状态未收口，请刷新核对");
+            }
+            recordReplayAudit(message, resolverId);
+        };
+        if (singleTx == null) {
+            complete.run();
+        } else {
+            singleTx.executeWithoutResult(status -> complete.run());
+        }
+    }
+
+    private void recordReplayAudit(DeadLetterMessage message, long resolverId) {
+        if (auditLogMapper == null || idGenerator == null) {
+            return;
+        }
+        AuditLog audit = new AuditLog();
+        audit.setId(idGenerator.nextId());
+        audit.setOperatorType("ADMIN");
+        audit.setOperatorId(resolverId);
+        audit.setAction("DLQ_REINJECT");
+        audit.setTargetType("DEAD_LETTER_MESSAGE");
+        audit.setTargetId(null);
+        String messageHash = messageHash(message.getMessageId());
+        audit.setBefore("{\"status\":\"PENDING\",\"messageHash\":\""
+                + messageHash + "\"}");
+        audit.setAfter("{\"status\":\"REPLAYED\"}");
+        audit.setRequestId("dlq-replay-" + messageHash);
+        audit.setCreateAt(time.now());
+        if (auditLogMapper.insert(audit) != 1) {
+            throw new BizException(ErrorCode.SERVICE_DEGRADED, "死信重放审计写入失败，请重试");
+        }
+    }
+
+    private static String messageHash(String messageId) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(messageId.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest, 0, 8);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("JVM 不支持 SHA-256", impossible);
+        }
     }
 
     private static View view(DeadLetterMessage message) {

@@ -2,8 +2,11 @@ package com.reservex.service;
 
 import com.reservex.common.TimeSupport;
 import com.reservex.entity.DeadLetterMessage;
+import com.reservex.entity.AuditLog;
 import com.reservex.common.BizException;
 import com.reservex.common.ErrorCode;
+import com.reservex.id.IdGenerator;
+import com.reservex.mapper.single.AuditLogMapper;
 import com.reservex.mapper.single.DeadLetterMessageMapper;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
@@ -48,6 +51,8 @@ class DeadLetterServiceTest {
     void replayClaimsThenPublishesOnlyToTheMappedBusinessTopic() {
         DeadLetterMessageMapper mapper = mock(DeadLetterMessageMapper.class);
         RocketMQTemplate rocketMQ = mock(RocketMQTemplate.class);
+        AuditLogMapper audits = mock(AuditLogMapper.class);
+        IdGenerator ids = mock(IdGenerator.class);
         TimeSupport time = mock(TimeSupport.class);
         LocalDateTime now = LocalDateTime.of(2026, 8, 18, 12, 0);
         when(time.now()).thenReturn(now);
@@ -56,11 +61,16 @@ class DeadLetterServiceTest {
         when(mapper.selectById("msg-1")).thenReturn(pending, replayed);
         when(mapper.claimReplay(eq("msg-1"), any(), eq(now), eq(7L))).thenReturn(1);
         when(mapper.completeReplay("msg-1", now, 7L)).thenReturn(1);
+        when(ids.nextId()).thenReturn(99L);
+        when(audits.insert((AuditLog) any(AuditLog.class))).thenReturn(1);
 
-        DeadLetterService.View result = new DeadLetterService(mapper, rocketMQ, time)
+        DeadLetterService.View result = new DeadLetterService(mapper, audits, ids, rocketMQ, time)
                 .replay("msg-1", 7L);
 
         verify(rocketMQ).syncSend("reservation-created", pending.getBody());
+        verify(audits).insert(org.mockito.ArgumentMatchers.<AuditLog>argThat(
+                audit -> "DLQ_REINJECT".equals(audit.getAction())
+                        && "DEAD_LETTER_MESSAGE".equals(audit.getTargetType())));
         assertEquals("REPLAYED", result.status());
     }
 

@@ -6,6 +6,7 @@ import com.reservex.common.ErrorCode;
 import com.reservex.common.TimeSupport;
 import com.reservex.config.ReserveXProperties;
 import com.reservex.entity.IdCardRoute;
+import com.reservex.entity.AuditLog;
 import com.reservex.entity.ReconcileLog;
 import com.reservex.entity.Reservation;
 import com.reservex.entity.Slot;
@@ -16,6 +17,7 @@ import com.reservex.id.IdGenerator;
 import com.reservex.message.CompensateRollbackMessage;
 import com.reservex.mapper.sharding.ReservationMapper;
 import com.reservex.mapper.single.IdCardRouteMapper;
+import com.reservex.mapper.single.AuditLogMapper;
 import com.reservex.mapper.single.ReconcileLogMapper;
 import com.reservex.mapper.single.SlotBucketMapper;
 import com.reservex.mapper.single.SlotMapper;
@@ -28,6 +30,10 @@ import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -53,6 +59,7 @@ public class ReconcileService {
     private final ReservationMapper reservationMapper;
     private final IdCardRouteMapper idCardRouteMapper;
     private final ReconcileLogMapper reconcileMapper;
+    private final AuditLogMapper auditLogMapper;
     private final StuckReservationMapper stuckMapper;
     private final StateLogMapper stateLogMapper;
     private final VerificationLogMapper verificationMapper;
@@ -61,7 +68,42 @@ public class ReconcileService {
     private final TimeSupport time;
     private final RollbackService rollbackService;
     private final ReserveXProperties props;
+    private final TransactionTemplate singleTx;
 
+    @Autowired
+    public ReconcileService(SlotMapper slotMapper,
+                            SlotBucketMapper bucketMapper,
+                            ReservationMapper reservationMapper,
+                            IdCardRouteMapper idCardRouteMapper,
+                            ReconcileLogMapper reconcileMapper,
+                            AuditLogMapper auditLogMapper,
+                            StuckReservationMapper stuckMapper,
+                            StateLogMapper stateLogMapper,
+                            VerificationLogMapper verificationMapper,
+                            StringRedisTemplate redis,
+                            IdGenerator idGenerator,
+                            TimeSupport time,
+                            RollbackService rollbackService,
+                            ReserveXProperties props,
+                            @Qualifier("singleTxManager") PlatformTransactionManager singleTxManager) {
+        this.slotMapper = slotMapper;
+        this.bucketMapper = bucketMapper;
+        this.reservationMapper = reservationMapper;
+        this.idCardRouteMapper = idCardRouteMapper;
+        this.reconcileMapper = reconcileMapper;
+        this.auditLogMapper = auditLogMapper;
+        this.stuckMapper = stuckMapper;
+        this.stateLogMapper = stateLogMapper;
+        this.verificationMapper = verificationMapper;
+        this.redis = redis;
+        this.idGenerator = idGenerator;
+        this.time = time;
+        this.rollbackService = rollbackService;
+        this.props = props;
+        this.singleTx = singleTxManager == null ? null : new TransactionTemplate(singleTxManager);
+    }
+
+    /** Test-only compatibility constructor; production uses the qualified single-db transaction manager. */
     public ReconcileService(SlotMapper slotMapper,
                             SlotBucketMapper bucketMapper,
                             ReservationMapper reservationMapper,
@@ -75,19 +117,29 @@ public class ReconcileService {
                             TimeSupport time,
                             RollbackService rollbackService,
                             ReserveXProperties props) {
-        this.slotMapper = slotMapper;
-        this.bucketMapper = bucketMapper;
-        this.reservationMapper = reservationMapper;
-        this.idCardRouteMapper = idCardRouteMapper;
-        this.reconcileMapper = reconcileMapper;
-        this.stuckMapper = stuckMapper;
-        this.stateLogMapper = stateLogMapper;
-        this.verificationMapper = verificationMapper;
-        this.redis = redis;
-        this.idGenerator = idGenerator;
-        this.time = time;
-        this.rollbackService = rollbackService;
-        this.props = props;
+        this(slotMapper, bucketMapper, reservationMapper, idCardRouteMapper, reconcileMapper,
+                null, stuckMapper, stateLogMapper, verificationMapper, redis,
+                idGenerator, time, rollbackService, props, null);
+    }
+
+    /** Test-only compatibility constructor; production uses the qualified single-db transaction manager. */
+    public ReconcileService(SlotMapper slotMapper,
+                            SlotBucketMapper bucketMapper,
+                            ReservationMapper reservationMapper,
+                            IdCardRouteMapper idCardRouteMapper,
+                            ReconcileLogMapper reconcileMapper,
+                            AuditLogMapper auditLogMapper,
+                            StuckReservationMapper stuckMapper,
+                            StateLogMapper stateLogMapper,
+                            VerificationLogMapper verificationMapper,
+                            StringRedisTemplate redis,
+                            IdGenerator idGenerator,
+                            TimeSupport time,
+                            RollbackService rollbackService,
+                            ReserveXProperties props) {
+        this(slotMapper, bucketMapper, reservationMapper, idCardRouteMapper, reconcileMapper,
+                auditLogMapper, stuckMapper, stateLogMapper, verificationMapper, redis,
+                idGenerator, time, rollbackService, props, null);
     }
 
     @Scheduled(cron = "${reservex.reconcile.crons.stock:0 */5 * * * ?}")
@@ -455,7 +507,7 @@ public class ReconcileService {
             case "stuck" -> handleStuckAction(id, action, resolverId);
             case "diff" -> handleDiffAction(id, action);
             default -> throw new BizException(ErrorCode.BAD_REQUEST,
-                    "DLQ 处置暂不支持,请用 /reconcile/stuck 查看待研判卡单");
+                    "不支持的对账处置类型,请使用 /api/admin/stuck-reservations 或 /api/admin/dead-letter-messages");
         };
     }
 
@@ -556,15 +608,19 @@ public class ReconcileService {
     }
 
     private int finishRollback(long rno, long resolverId) {
-        int n = stuckMapper.transition(rno, 4, 2, resolverId, time.now());
-        if (n == 0) {
-            StuckReservation latest = stuckMapper.selectById(rno);
-            if (latest != null && latest.getStatus() == 2) {
-                return 0;
+        java.util.function.Supplier<Integer> finish = () -> {
+            int n = stuckMapper.transition(rno, 4, 2, resolverId, time.now());
+            if (n == 0) {
+                StuckReservation latest = stuckMapper.selectById(rno);
+                if (latest != null && latest.getStatus() == 2) {
+                    return 0;
+                }
+                throw new BizException(ErrorCode.STATE_CONFLICT, "卡单已被其他人员处理");
             }
-            throw new BizException(ErrorCode.STATE_CONFLICT, "卡单已被其他人员处理");
-        }
-        return n;
+            recordRollbackAudit(rno, resolverId);
+            return n;
+        };
+        return singleTx == null ? finish.get() : singleTx.execute(status -> finish.get());
     }
 
     private void releaseRollbackClaim(long rno, long resolverId, int claimed) {
@@ -572,6 +628,26 @@ public class ReconcileService {
             return;
         }
         stuckMapper.transition(rno, 4, 0, resolverId, time.now());
+    }
+
+    private void recordRollbackAudit(long rno, long resolverId) {
+        if (auditLogMapper == null) {
+            return;
+        }
+        AuditLog audit = new AuditLog();
+        audit.setId(idGenerator.nextId());
+        audit.setOperatorType("ADMIN");
+        audit.setOperatorId(resolverId);
+        audit.setAction("STUCK_ROLLBACK");
+        audit.setTargetType("RESERVATION");
+        audit.setTargetId(rno);
+        audit.setBefore("{\"status\":\"STUCK\"}");
+        audit.setAfter("{\"status\":\"ROLLED_BACK\"}");
+        audit.setRequestId("stuck-rollback-" + rno);
+        audit.setCreateAt(time.now());
+        if (auditLogMapper.insert(audit) != 1) {
+            throw new BizException(ErrorCode.SERVICE_DEGRADED, "卡单回滚审计写入失败，请重试");
+        }
     }
 
     private int handleDiffAction(long reconcileLogId, String action) {

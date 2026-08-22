@@ -5,6 +5,7 @@ import com.reservex.common.ErrorCode;
 import com.reservex.common.TimeSupport;
 import com.reservex.config.ReserveXProperties;
 import com.reservex.entity.IdCardRoute;
+import com.reservex.entity.AuditLog;
 import com.reservex.entity.ReconcileLog;
 import com.reservex.entity.Reservation;
 import com.reservex.entity.Slot;
@@ -14,6 +15,7 @@ import com.reservex.entity.StuckReservation;
 import com.reservex.id.IdGenerator;
 import com.reservex.mapper.sharding.ReservationMapper;
 import com.reservex.mapper.single.IdCardRouteMapper;
+import com.reservex.mapper.single.AuditLogMapper;
 import com.reservex.mapper.single.ReconcileLogMapper;
 import com.reservex.mapper.single.SlotBucketMapper;
 import com.reservex.mapper.single.SlotMapper;
@@ -161,6 +163,7 @@ class ReconcileServiceTest {
         ReservationMapper reservations = mock(ReservationMapper.class);
         StuckReservation row = stuck();
         StateLogMapper stateLogs = mock(StateLogMapper.class);
+        AuditLogMapper audits = mock(AuditLogMapper.class);
         StateLog claim = new StateLog();
         claim.setStatus(4);
         StateLog done = new StateLog();
@@ -170,14 +173,22 @@ class ReconcileServiceTest {
         when(stuck.transition(eq(RNO), eq(4), eq(2), eq(7L), any())).thenReturn(1);
         when(rollback.compensate(any())).thenReturn(true);
         when(stateLogs.selectById("rx-" + RNO)).thenReturn(claim, done);
+        when(audits.insert((AuditLog) any(AuditLog.class))).thenReturn(1);
 
-        ReconcileService service = service(stuck, rollback, reservations, stateLogs);
+        ReconcileService service = new ReconcileService(mock(SlotMapper.class), mock(SlotBucketMapper.class),
+                reservations, mock(IdCardRouteMapper.class), mock(ReconcileLogMapper.class), audits, stuck,
+                stateLogs, mock(VerificationLogMapper.class), mock(StringRedisTemplate.class,
+                        org.mockito.Mockito.RETURNS_DEEP_STUBS), mock(IdGenerator.class), mock(TimeSupport.class),
+                rollback, new ReserveXProperties());
 
         org.junit.jupiter.api.Assertions.assertEquals(1,
                 service.handleAction("stuck", RNO, "rollback", 7L));
 
         verify(rollback).compensate(any());
         verify(stuck).transition(eq(RNO), eq(4), eq(2), eq(7L), any());
+        verify(audits).insert(org.mockito.ArgumentMatchers.<AuditLog>argThat(
+                audit -> "STUCK_ROLLBACK".equals(audit.getAction())
+                        && RNO == audit.getTargetId()));
     }
 
     @Test

@@ -37,12 +37,16 @@ accounts:
     defaultTopicPerm: DENY
     defaultGroupPerm: DENY
     topicPerms:
-      - reservation-created=PUB|SUB
-      - compensate-rollback=PUB|SUB
-      - timeout=PUB|SUB
-      - "%DLQ%cg-persistence=SUB"
-      - "%DLQ%cg-rollback=SUB"
-      - "%DLQ%cg-timeout=SUB"
+      # RocketMQ 5.5's V1 ACL migration only understands PUB/SUB/DENY; the
+      # consumer offset/pull path also checks GET, so PUB|SUB leaves consumers
+      # permanently denied. Keep the resource allowlist narrow and use ALL for
+      # these explicitly named topics.
+      - reservation-created=ALL
+      - compensate-rollback=ALL
+      - timeout=ALL
+      - "%DLQ%cg-persistence=ALL"
+      - "%DLQ%cg-rollback=ALL"
+      - "%DLQ%cg-timeout=ALL"
     groupPerms:
       - cg-persistence=SUB
       - cg-rollback=SUB
