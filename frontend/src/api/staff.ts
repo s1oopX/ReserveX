@@ -11,6 +11,8 @@ export interface VerifyResult {
   staffId: Id | null
 }
 
+export type StaffReservationVO = Omit<ReservationVO, 'idCardMasked'>
+
 /** 今日核销统计(StaffToday 工作台指标) */
 export interface VerifyStatsVO {
   confirmed: string        // Java long -> JSON string
@@ -27,18 +29,22 @@ export const staffApi = {
    * 签名覆盖全部字段及顺序,前端一旦修改(哪怕只是 pretty-print)验签必失败。
    */
   verifyScan: (payload: string) =>
-    http.post<VerifyResult>('/staff/verify/scan', { payload }),
+    http.post<VerifyResult>('/staff/verifications', { method: 'QR', payload }),
 
   /**
-   * 手工核销。需二次确认脱敏证件号(避免工作人员误核销他人预约)。
+   * 手工核销。需游客现场提供身份证末四位(避免工作人员从列表复制凭据)。
    * 后端会写 audit_log(action='MANUAL_VERIFY')。
    */
-  verifyManual: (rno: Id, idCardMaskedConfirm: string) =>
-    http.post<VerifyResult>('/staff/verify/manual', { rno, idCardMaskedConfirm }),
+  verifyManual: (rno: Id, idCardLast4: string) =>
+    http.post<VerifyResult>('/staff/verifications', {
+      method: 'MANUAL',
+      rno,
+      idCardLast4,
+    }),
 
   /** 今日工作台:本人负责场次的预约列表 */
-  today: () => http.get<ReservationVO[]>('/staff/today'),
+  today: () => http.get<StaffReservationVO[]>('/staff/reservations'),
 
   /** 今日核销统计指标 */
-  verifyStats: () => http.get<VerifyStatsVO>('/staff/verify-stats'),
+  verifyStats: () => http.get<VerifyStatsVO>('/staff/verification-statistics'),
 }

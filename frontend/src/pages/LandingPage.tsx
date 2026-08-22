@@ -30,17 +30,6 @@ export default function LandingPage() {
 
   useEffect(() => {
     async function loadPublicSlots() {
-      if (!role) {
-        const todayStr = todayInZone()
-        setSlots([
-          { slotId: 'preview-1', slotDate: todayStr, slotHour: 9, durationMin: 180, released: true, releaseAt: '0', validUntil: '', remain: 420, full: false },
-          { slotId: 'preview-2', slotDate: todayStr, slotHour: 13, durationMin: 180, released: true, releaseAt: '0', validUntil: '', remain: 150, full: false },
-          { slotId: 'preview-3', slotDate: todayStr, slotHour: 15, durationMin: 180, released: true, releaseAt: '0', validUntil: '', remain: 85, full: false },
-        ])
-        setLoadingSlots(false)
-        return
-      }
-
       try {
         const data = await reservationApi.listSlots(todayInZone())
         setSlots(data.slice(0, 4))
@@ -51,7 +40,7 @@ export default function LandingPage() {
       }
     }
     loadPublicSlots()
-  }, [role])
+  }, [])
 
   const handleAction = () => {
     if (role === 'USER') {

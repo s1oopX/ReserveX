@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Users, Plus, RefreshCw } from 'lucide-react'
+import { Ban, CircleCheckBig, Plus, RefreshCw, Users } from 'lucide-react'
 import { adminApi, type StaffAccount } from '@/api/admin'
 import { isApiError } from '@/api/http'
 import { Card } from '@/components/ui/card'
@@ -9,6 +9,8 @@ import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/common/ErrorState'
 import { EmptyState } from '@/components/common/EmptyState'
+import { AlertDialog } from '@/components/ui/alert-dialog'
+import { toast } from '@/components/ui/sonner'
 import { CreateStaffDialog } from './CreateStaffDialog'
 
 export default function AdminStaff() {
@@ -17,6 +19,8 @@ export default function AdminStaff() {
   const [errorMsg, setErrorMsg] = useState<string>('')
   const [requestId, setRequestId] = useState<string>('')
   const [creating, setCreating] = useState<boolean>(false)
+  const [selected, setSelected] = useState<StaffAccount | null>(null)
+  const [changing, setChanging] = useState<boolean>(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -42,6 +46,22 @@ export default function AdminStaff() {
   useEffect(() => {
     load()
   }, [load])
+
+  const changeStatus = async () => {
+    if (!selected) return
+    setChanging(true)
+    const banned = selected.status === 0
+    try {
+      const updated = await adminApi.setStaffBanned(selected.userId, banned, selected.version)
+      setList((rows) => rows?.map((row) => row.userId === updated.userId ? updated : row) ?? null)
+      toast.success(banned ? '账号已封禁，现有会话已撤销' : '账号已解封，需重新登录')
+      setSelected(null)
+    } catch (err) {
+      toast.error(isApiError(err) ? err.message : '账号状态更新失败')
+    } finally {
+      setChanging(false)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -89,12 +109,13 @@ export default function AdminStaff() {
                 <TableHead>证件号</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>创建时间</TableHead>
+                <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {list.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                     <Users className="h-6 w-6 inline mr-2" />
                     暂无工作人员账号。点击右上角新建。
                   </TableCell>
@@ -114,6 +135,19 @@ export default function AdminStaff() {
                       )}
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{s.createAt}</TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        size="sm"
+                        variant={s.status === 0 ? 'destructive' : 'outline'}
+                        className="gap-1.5"
+                        onClick={() => setSelected(s)}
+                      >
+                        {s.status === 0
+                          ? <Ban className="h-3.5 w-3.5" />
+                          : <CircleCheckBig className="h-3.5 w-3.5" />}
+                        {s.status === 0 ? '封禁' : '解封'}
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))
               )}
@@ -128,6 +162,19 @@ export default function AdminStaff() {
       {creating && (
         <CreateStaffDialog onClose={() => setCreating(false)} onDone={() => { setCreating(false); load() }} />
       )}
+
+      <AlertDialog
+        open={selected !== null}
+        onOpenChange={(open) => { if (!open && !changing) setSelected(null) }}
+        title={selected?.status === 0 ? '封禁工作人员账号' : '解封工作人员账号'}
+        description={selected?.status === 0
+          ? `封禁 ${selected.email} 后，其 access 与 refresh 会话将立即失效。`
+          : `解封 ${selected?.email ?? ''} 后，工作人员需要重新登录。`}
+        confirmText={selected?.status === 0 ? '确认封禁' : '确认解封'}
+        variant={selected?.status === 0 ? 'destructive' : 'default'}
+        busy={changing}
+        onConfirm={changeStatus}
+      />
     </div>
   )
 }

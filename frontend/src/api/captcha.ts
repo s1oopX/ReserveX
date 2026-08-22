@@ -7,7 +7,5 @@ export interface CaptchaVO {
 }
 
 export const captchaApi = {
-  get: () => http.get<CaptchaVO>('/captcha'),
-  verify: (key: string, input: string) =>
-    http.post<boolean>('/captcha/verify', { key, input }),
+  create: () => http.post<CaptchaVO>('/captchas'),
 }

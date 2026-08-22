@@ -28,7 +28,7 @@ export function IncreaseCapacityDialog({
     setSubmitting(true)
     setErrorMsg('')
     adminApi
-      .increaseCapacity(slot.slotId, n, slot.version)
+      .increaseCapacity(slot.slotId, slot.capacity + n, slot.version)
       .then(() => {
         toast.success(`容量 +${n}`, '增容成功')
         onDone()

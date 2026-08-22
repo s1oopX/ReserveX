@@ -12,25 +12,12 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { RequestIdHint } from '@/components/common/RequestIdHint'
 import { NoticeDialog } from '@/components/common/NoticeDialog'
 
-const ALLOWED_EMAIL_DOMAINS = [
-  'qq.com',
-  '163.com',
-  '126.com',
-  'gmail.com',
-  'outlook.com',
-  'hotmail.com',
-  'foxmail.com',
-  'sina.com',
-  'sohu.com',
-  'aliyun.com',
-  'icloud.com',
-  'vip.163.com',
-  'yeah.net',
-]
-
 export default function Register() {
   const nav = useNavigate()
   const [email, setEmail] = useState('')
+  const [emailCode, setEmailCode] = useState('')
+  const [sendingCode, setSendingCode] = useState(false)
+  const [codeSent, setCodeSent] = useState(false)
   const [phone, setPhone] = useState('')
   const [idCard, setIdCard] = useState('')
   const [password, setPassword] = useState('')
@@ -41,18 +28,12 @@ export default function Register() {
   const [msg, setMsg] = useState('')
   const [requestId, setRequestId] = useState('')
   const [busy, setBusy] = useState(false)
+  const [registrationKey] = useState(() => crypto.randomUUID())
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setMsg('')
     setRequestId('')
-
-    // Email domain restriction
-    const emailDomain = email.split('@')[1]?.toLowerCase().trim()
-    if (!emailDomain || !ALLOWED_EMAIL_DOMAINS.includes(emailDomain)) {
-      setMsg('不支持自定义或临时邮箱注册，请使用 QQ、163/126、Gmail、Outlook、新浪或阿里等主流公共邮箱')
-      return
-    }
 
     if (password.length < 8) {
       setMsg('密码必须至少 8 位字符')
@@ -71,18 +52,20 @@ export default function Register() {
 
     setBusy(true)
     try {
-      await authApi.register({ email, phone, password, idCard })
-      nav('/login', { state: { registered: true } })
+      const result = await authApi.register({ email, emailCode, phone, password, idCard }, registrationKey)
+      if (result.ready) {
+        nav('/login', { state: { registered: true } })
+      } else {
+        setMsg('注册信息已受理，账号正在完成初始化，请稍后使用邮箱登录')
+      }
     } catch (err) {
       if (!isApiError(err)) {
         setMsg('网络繁忙，请稍后重试')
         return
       }
       setRequestId(err.requestId)
-      if (err.code === Code.EMAIL_TAKEN) {
-        setMsg('该邮箱已被注册，请直接登录')
-      } else if (err.code === Code.PHONE_TAKEN) {
-        setMsg('该手机号已被注册')
+      if (err.code === Code.REGISTRATION_CONFLICT) {
+        setMsg('邮箱或手机号已被注册')
       } else {
         setMsg(err.message)
       }
@@ -91,19 +74,42 @@ export default function Register() {
     }
   }
 
+  async function sendCode() {
+    setMsg('')
+    setRequestId('')
+    if (!email || !email.includes('@')) {
+      setMsg('请先填写有效邮箱')
+      return
+    }
+    setSendingCode(true)
+    try {
+      await authApi.sendRegistrationCode(email)
+      setCodeSent(true)
+    } catch (err) {
+      if (isApiError(err)) {
+        setRequestId(err.requestId)
+        setMsg(err.message)
+      } else {
+        setMsg('网络繁忙，请稍后重试')
+      }
+    } finally {
+      setSendingCode(false)
+    }
+  }
+
   return (
     <>
       <Card className="designer-card-elevated rounded-2xl overflow-hidden shadow-2xl border border-white/80">
         <CardHeader className="space-y-1 pb-3 pt-5 px-6 border-b border-slate-100">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-xl font-black font-sans text-slate-900 tracking-tight">实名注册</CardTitle>
+            <CardTitle className="text-xl font-black font-sans text-slate-900 tracking-tight">预约信息登记</CardTitle>
             <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200/60">
               <ShieldCheck className="h-3 w-3" />
-              官方实名卡口
+              邮箱归属验证
             </span>
           </div>
           <CardDescription className="text-xs text-slate-500">
-            开通湿地公园实名预约服务账号
+            登记预约信息；入园时仍需按现场规则核验证件
           </CardDescription>
         </CardHeader>
 
@@ -113,7 +119,7 @@ export default function Register() {
             <div className="space-y-1">
               <div className="flex justify-between items-center">
                 <Label htmlFor="reg-email" className="text-xs font-semibold text-slate-700">电子邮箱</Label>
-                <span className="text-[11px] text-slate-400">仅限主流公共邮箱</span>
+                <span className="text-[11px] text-slate-400">验证码用于确认邮箱归属</span>
               </div>
               <div className="relative">
                 <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
@@ -121,12 +127,38 @@ export default function Register() {
                   id="reg-email"
                   type="email"
                   required
-                  placeholder="name@qq.com / name@163.com / name@gmail.com"
+                  placeholder="name@example.com"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(e) => {
+                    setEmail(e.target.value)
+                    setCodeSent(false)
+                  }}
                   className="h-10 pl-9 rounded-xl border-slate-200 bg-slate-50/50 focus:bg-white text-xs font-medium transition-all"
                 />
               </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="reg-email-code" className="text-xs font-semibold text-slate-700">邮箱验证码</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="reg-email-code"
+                  type="text"
+                  inputMode="numeric"
+                  required
+                  pattern="^\d{6}$"
+                  maxLength={6}
+                  placeholder="6 位验证码"
+                  value={emailCode}
+                  onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, ''))}
+                  className="h-10 rounded-xl border-slate-200 bg-slate-50/50 focus:bg-white text-xs font-mono"
+                />
+                <Button type="button" variant="outline" disabled={sendingCode || !email} onClick={sendCode}
+                  className="h-10 shrink-0 rounded-xl text-xs">
+                  {sendingCode ? '发送中…' : codeSent ? '重新发送' : '发送验证码'}
+                </Button>
+              </div>
+              {codeSent && <p className="text-[11px] text-emerald-700">验证码已发送，10 分钟内有效且只能使用一次</p>}
             </div>
 
             {/* Row 2: Phone & ID Card (2-Column Grid) */}

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { RefreshCw, Info, CheckCircle2 } from 'lucide-react'
-import { adminApi, type ReconcileItem, type StuckItem, type DlqView } from '@/api/admin'
+import { adminApi, type DeadLetterItem, type ReconcileItem, type StuckItem } from '@/api/admin'
 import type { Id } from '@/api/http'
 import { isApiError } from '@/api/http'
 import { toast } from '@/components/ui/sonner'
@@ -16,13 +16,15 @@ import { ErrorState } from '@/components/common/ErrorState'
 
 export default function AdminReconcile() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const initialTab = searchParams.get('tab') || 'diff'
+  const requestedTab = searchParams.get('tab')
+  const initialTab = requestedTab === 'latest' || requestedTab === 'stuck' || requestedTab === 'dlq'
+    ? requestedTab : 'diff'
   const [tab, setTab] = useState<string>(initialTab)
 
   const [diffList, setDiffList] = useState<ReconcileItem[] | null>(null)
   const [latestList, setLatestList] = useState<ReconcileItem[] | null>(null)
   const [stuckList, setStuckList] = useState<StuckItem[] | null>(null)
-  const [dlqView, setDlqView] = useState<DlqView | null>(null)
+  const [deadLetters, setDeadLetters] = useState<DeadLetterItem[] | null>(null)
   const [acting, setActing] = useState<string>('')
 
   const [loading, setLoading] = useState<boolean>(true)
@@ -84,9 +86,9 @@ export default function AdminReconcile() {
         })
     } else if (tab === 'dlq') {
       adminApi
-        .reconcileDlq()
+        .listDeadLetters()
         .then((data) => {
-          setDlqView(data)
+          setDeadLetters(data)
           setLoading(false)
         })
         .catch((err) => {
@@ -95,7 +97,7 @@ export default function AdminReconcile() {
             setErrorMsg(err.message)
             setRequestId(err.requestId)
           } else {
-            setErrorMsg('获取死信队列失败')
+            setErrorMsg('获取死信消息失败')
           }
         })
     }
@@ -105,19 +107,33 @@ export default function AdminReconcile() {
     loadData()
   }, [loadData])
 
-  const doAction = (type: 'diff' | 'stuck' | 'dlq', id: Id, action: string) => {
+  const doAction = (type: 'stuck', id: Id, action: string) => {
     const key = `${action}-${id}`
     setActing(key)
     adminApi
-      .reconcileAction(type, id, action)
+      .reconcileAction(type, id)
       .then((affected) => {
         setActing('')
-        toast.success(action === 'rollback' ? `已回滚 (受影响 ${affected})` : `已处理 (受影响 ${affected})`, '处置完成')
+        toast.success(`已回滚 (受影响 ${affected})`, '处置完成')
         loadData()
       })
       .catch((err) => {
         setActing('')
         toast.error(isApiError(err) ? err.message : '处置失败')
+      })
+  }
+
+  const replayDeadLetter = (messageId: string) => {
+    setActing(`replay-${messageId}`)
+    adminApi.replayDeadLetter(messageId)
+      .then(() => {
+        setActing('')
+        toast.success('消息已重新投递到原业务 Topic', '重放完成')
+        loadData()
+      })
+      .catch((err) => {
+        setActing('')
+        toast.error(isApiError(err) ? err.message : '死信重放失败')
       })
   }
 
@@ -129,7 +145,7 @@ export default function AdminReconcile() {
             对账中心与对齐控制
           </h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            监控 Redis 与 DB 差异、卡单转人工及 DLQ 消息
+            监控 Redis 与 DB 差异及卡单人工处置
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={loadData} className="gap-1.5">
@@ -156,7 +172,7 @@ export default function AdminReconcile() {
           <TabsTrigger value="diff">库存差异记录</TabsTrigger>
           <TabsTrigger value="latest">最新全量对账日志</TabsTrigger>
           <TabsTrigger value="stuck">卡单列表 (stuck)</TabsTrigger>
-          <TabsTrigger value="dlq">死信队列 (DLQ)</TabsTrigger>
+          <TabsTrigger value="dlq">死信消息</TabsTrigger>
         </TabsList>
 
         <TabsContent value="diff" className="mt-4">
@@ -261,6 +277,8 @@ export default function AdminReconcile() {
                       <TableCell>
                         {item.status === 0 ? (
                           <Badge variant="warning">待研判</Badge>
+                        ) : item.status === 4 ? (
+                          <Badge variant="warning">回滚待恢复</Badge>
                         ) : item.status === 1 ? (
                           <Badge variant="success">已成功重投</Badge>
                         ) : (
@@ -271,14 +289,9 @@ export default function AdminReconcile() {
                       <TableCell className="text-right">
                         <div className="flex gap-1 justify-end">
                           <Button size="sm" variant="outline" className="text-xs"
-                            disabled={item.status !== 0 || acting === `rollback-${item.reservationNo}`}
+                            disabled={(item.status !== 0 && item.status !== 4) || acting === `rollback-${item.reservationNo}`}
                             onClick={() => doAction('stuck', item.reservationNo, 'rollback')}>
-                            {acting === `rollback-${item.reservationNo}` ? '...' : '人工回滚'}
-                          </Button>
-                          <Button size="sm" variant="outline" className="text-xs"
-                            disabled={item.status !== 0 || acting === `ignore-${item.reservationNo}`}
-                            onClick={() => doAction('stuck', item.reservationNo, 'ignore')}>
-                            {acting === `ignore-${item.reservationNo}` ? '...' : '忽略'}
+                            {acting === `rollback-${item.reservationNo}` ? '...' : item.status === 4 ? '重试回滚' : '人工回滚'}
                           </Button>
                         </div>
                       </TableCell>
@@ -290,17 +303,7 @@ export default function AdminReconcile() {
           </ReconcileTableShell>
         </TabsContent>
 
-        <TabsContent value="dlq" className="mt-4 space-y-4">
-          <Alert variant="warning" className="border-amber-300 bg-amber-50">
-            <Info className="h-4 w-4 text-amber-700" />
-            <AlertDescription className="text-xs text-amber-900 font-medium leading-relaxed">
-              <strong>DLQ 监控说明：</strong>真实死信队列监控需 RocketMQ Dashboard。
-              {dlqView && (
-                <>当前待研判卡单数：<strong>{dlqView.stuckCount}</strong>。请前往「卡单列表」处置。</>
-              )}
-              {dlqView?.reason && <><br />{dlqView.reason}</>}
-            </AlertDescription>
-          </Alert>
+        <TabsContent value="dlq" className="mt-4">
           <ReconcileTableShell
             loading={loading}
             errorMsg={errorMsg}
@@ -310,24 +313,49 @@ export default function AdminReconcile() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Topic</TableHead>
-                  <TableHead>业务编号</TableHead>
+                  <TableHead>消息 ID</TableHead>
+                  <TableHead>来源消费组</TableHead>
+                  <TableHead>目标 Topic</TableHead>
                   <TableHead>重试次数</TableHead>
-                  <TableHead>最后错误</TableHead>
-                  <TableHead>消息摘要</TableHead>
-                  <TableHead className="text-right">死信处置</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>捕获时间</TableHead>
+                  <TableHead className="text-right">处置</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                    死信队列拉取接口当前返回空列表。请用「卡单列表」tab 查看待研判项。
-                  </TableCell>
-                </TableRow>
+                {!deadLetters || deadLetters.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                      <CheckCircle2 className="h-6 w-6 text-emerald-600 inline mr-2" />
+                      当前没有死信消息。
+                    </TableCell>
+                  </TableRow>
+                ) : deadLetters.map((item) => (
+                  <TableRow key={item.messageId}>
+                    <TableCell className="font-mono text-xs max-w-48 truncate">{item.messageId}</TableCell>
+                    <TableCell className="font-mono text-xs">{item.sourceGroup}</TableCell>
+                    <TableCell className="font-mono text-xs">{item.targetTopic}</TableCell>
+                    <TableCell>{item.reconsumeTimes}</TableCell>
+                    <TableCell>
+                      <Badge variant={item.status === 'REPLAYED' ? 'success' : 'warning'}>
+                        {item.status === 'PENDING' ? '待重放' : item.status === 'REPLAYING' ? '重放中' : '已重放'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">{item.capturedAt}</TableCell>
+                    <TableCell className="text-right">
+                      <Button size="sm" variant="outline" className="text-xs"
+                        disabled={item.status === 'REPLAYED' || acting === `replay-${item.messageId}`}
+                        onClick={() => replayDeadLetter(item.messageId)}>
+                        {acting === `replay-${item.messageId}` ? '...' : '重放'}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           </ReconcileTableShell>
         </TabsContent>
+
       </Tabs>
     </div>
   )

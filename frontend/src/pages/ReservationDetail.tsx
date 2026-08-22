@@ -57,10 +57,10 @@ export default function ReservationDetail() {
   }, [loadData])
 
   const handleConfirmCancel = async () => {
-    if (!rno || cancelBusy) return
+    if (!rno || !detail || cancelBusy) return
     setCancelBusy(true)
     try {
-      await reservationApi.cancel(rno)
+      await reservationApi.cancel(rno, detail.version)
       toast.success('预约已成功取消')
       setCancelOpen(false)
       loadData()

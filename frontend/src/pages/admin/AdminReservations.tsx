@@ -16,6 +16,8 @@ type StatusFilter = '' | 'CONFIRMED' | 'VERIFIED' | 'CANCELLED' | 'EXPIRED'
 
 export default function AdminReservations() {
   const [list, setList] = useState<AdminReservationVO[] | null>(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState<boolean>(true)
   const [errorMsg, setErrorMsg] = useState<string>('')
   const [requestId, setRequestId] = useState<string>('')
@@ -24,8 +26,9 @@ export default function AdminReservations() {
   const [slotDate, setSlotDate] = useState<string>('')
   const [status, setStatus] = useState<StatusFilter>('')
 
-  const load = useCallback(() => {
-    setLoading(true)
+  const load = useCallback((cursor?: string) => {
+    const append = Boolean(cursor)
+    setLoading(!append)
     setErrorMsg('')
     setRequestId('')
     adminApi
@@ -33,9 +36,13 @@ export default function AdminReservations() {
         rno: rno.trim() || undefined,
         slotDate: slotDate || undefined,
         status: status || undefined,
+        cursor,
+        size: 100,
       })
       .then((data) => {
-        setList(data)
+        setList((previous) => append && previous ? [...previous, ...data.items] : data.items)
+        setHasMore(data.hasMore)
+        setNextCursor(data.nextCursor)
         setLoading(false)
       })
       .catch((err) => {
@@ -61,10 +68,10 @@ export default function AdminReservations() {
             全园预约明细管理
           </h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            查询全园游客预约记录、追踪状态时间线与核销日志(跨分库广播,上限 500 条)
+            查询全园游客预约记录、追踪状态时间线与核销日志(跨分库广播)
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={load} className="gap-1.5 w-fit">
+        <Button variant="outline" size="sm" onClick={() => load()} className="gap-1.5 w-fit">
           <RefreshCw className="h-4 w-4" />
           <span>刷新</span>
         </Button>
@@ -96,7 +103,7 @@ export default function AdminReservations() {
               <option value="EXPIRED">已过期</option>
             </Select>
           </div>
-          <Button className="gap-1.5" onClick={load} disabled={loading}>
+          <Button className="gap-1.5" onClick={() => load()} disabled={loading}>
             <Search className="h-4 w-4" />
             <span>查询</span>
           </Button>
@@ -120,9 +127,15 @@ export default function AdminReservations() {
           <EmptyState
             icon={<TicketCheck className="h-8 w-8" />}
             title="未查询到匹配的预约记录"
-            description="调整筛选条件后重新查询。全园查询按 create_at 倒序返回最近 500 条。"
+            description="调整筛选条件后重新查询。"
           />
         ) : (
+          <div className="space-y-3">
+          {hasMore && (
+            <Button variant="outline" size="sm" onClick={() => nextCursor && load(nextCursor)} disabled={loading}>
+              加载更多
+            </Button>
+          )}
           <Card className="shadow-2xs border">
             <Table>
               <TableHeader>
@@ -165,6 +178,7 @@ export default function AdminReservations() {
               </TableBody>
             </Table>
           </Card>
+          </div>
         )
       )}
     </div>

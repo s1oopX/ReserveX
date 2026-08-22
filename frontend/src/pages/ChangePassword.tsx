@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { KeyRound, Lock, AlertTriangle } from 'lucide-react'
 import { authApi } from '@/api/auth'
-import { isApiError } from '@/api/http'
+import { getAccessToken, isApiError } from '@/api/http'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -24,6 +24,10 @@ export default function ChangePassword() {
   const [busy, setBusy] = useState(false)
 
   const isForced = Boolean(onceToken)
+
+  if (!isForced && !getAccessToken()) {
+    return <Navigate to="/login" replace />
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()

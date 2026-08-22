@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { CalendarCheck, RefreshCw } from 'lucide-react'
-import { staffApi } from '@/api/staff'
-import { type ReservationVO } from '@/api/reservation'
+import { staffApi, type StaffReservationVO } from '@/api/staff'
 import { isApiError } from '@/api/http'
 import { todayInZone } from '@/lib/datetime'
 import { Card } from '@/components/ui/card'
@@ -14,7 +13,7 @@ import { EmptyState } from '@/components/common/EmptyState'
 
 export default function StaffReservations() {
   const today = todayInZone()
-  const [list, setList] = useState<ReservationVO[] | null>(null)
+  const [list, setList] = useState<StaffReservationVO[] | null>(null)
   const [loading, setLoading] = useState<boolean>(true)
   const [errorMsg, setErrorMsg] = useState<string>('')
   const [requestId, setRequestId] = useState<string>('')
@@ -82,14 +81,13 @@ export default function StaffReservations() {
                 <TableHead>场次日期</TableHead>
                 <TableHead>时段</TableHead>
                 <TableHead>状态</TableHead>
-                <TableHead>证件号</TableHead>
                 <TableHead>创建时间</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {list.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
                     <CalendarCheck className="h-6 w-6 inline mr-2" />
                     今日暂无预约记录。
                   </TableCell>
@@ -115,7 +113,6 @@ export default function StaffReservations() {
                         <Badge variant="outline">{r.status}</Badge>
                       )}
                     </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{r.idCardMasked || '-'}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{r.createAt}</TableCell>
                   </TableRow>
                 ))

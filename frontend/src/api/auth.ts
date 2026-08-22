@@ -1,66 +1,64 @@
-import { http, setAccessToken, clearSession, type Id } from './http'
+import {
+  http,
+  setSession,
+  clearSession,
+  getRole,
+  type Id,
+} from './http'
 
 export interface LoginResult {
   accessToken: string
-  refreshToken: string
   userId: Id
   role: 'USER' | 'STAFF' | 'ADMIN'
 }
 
 export interface RegisterReq {
   email: string
+  emailCode: string
   phone: string
   password: string
   idCard: string
 }
 
-const REFRESH_KEY = 'reservex.refresh'
-const ROLE_KEY = 'reservex.role'
-
-function notifyAuthChange() {
-  window.dispatchEvent(new Event('reservex-auth-change'))
+export interface CreatedUser {
+  userId: Id
+  ready: boolean
 }
 
 function remember(r: LoginResult): void {
-  setAccessToken(r.accessToken)
-  sessionStorage.setItem(REFRESH_KEY, r.refreshToken)
-  sessionStorage.setItem(ROLE_KEY, r.role)
-  notifyAuthChange()
+  setSession(r)
 }
 
 export const authApi = {
   login: async (email: string, password: string) => {
-    const r = await http.post<LoginResult>('/auth/login', { email, password })
+    const r = await http.post<LoginResult>('/sessions', { email, password })
     remember(r)
     return r
   },
 
-  register: (req: RegisterReq) => http.post<null>('/auth/register', req),
+  register: (req: RegisterReq, registrationKey: string) =>
+    http.post<CreatedUser>('/users', req, { 'Idempotency-Key': registrationKey }),
 
-  refresh: async (refreshToken: string) => {
-    const r = await http.post<LoginResult>('/auth/refresh', { refreshToken })
-    remember(r)
-    return r
-  },
+  registrationStatus: (registrationKey: string) =>
+    http.get<{ status: 'PENDING' | 'READY' | 'STUCK' }>(`/registrations/${encodeURIComponent(registrationKey)}`),
+
+  sendRegistrationCode: (email: string) =>
+    http.post<null>('/email-verifications', { email }),
 
   logout: async () => {
-    const refreshToken = sessionStorage.getItem(REFRESH_KEY)
     try {
-      await http.post<null>('/auth/logout', refreshToken ? { refreshToken } : undefined)
+      await http.delete<null>('/sessions/current')
     } catch {
       // Ignore network error on logout
     } finally {
       clearSession()
-      notifyAuthChange()
     }
   },
 
   changePassword: async (oldPassword: string, newPassword: string, onceToken?: string) => {
-    await http.post<null>('/auth/password', { oldPassword, newPassword, onceToken })
+    await http.patch<null>('/users/me', { oldPassword, newPassword, onceToken })
     clearSession()
-    notifyAuthChange()
   },
 
-  currentRole: (): 'USER' | 'STAFF' | 'ADMIN' | null =>
-    sessionStorage.getItem(ROLE_KEY) as 'USER' | 'STAFF' | 'ADMIN' | null,
+  currentRole: getRole,
 }

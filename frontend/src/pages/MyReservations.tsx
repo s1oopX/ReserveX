@@ -51,7 +51,7 @@ export default function MyReservations() {
     if (!cancelTarget || cancelBusy) return
     setCancelBusy(true)
     try {
-      await reservationApi.cancel(cancelTarget.reservationNo)
+      await reservationApi.cancel(cancelTarget.reservationNo, cancelTarget.version)
       toast.success('预约已成功取消')
       setCancelTarget(null)
       loadData()
@@ -68,10 +68,10 @@ export default function MyReservations() {
 
   const filteredList = list?.filter((item) => {
     if (filter === 'pending') {
-      return item.status === 'CONFIRMED' || item.status === 'PENDING'
+      return item.status === 'CONFIRMED' || item.status === 'PENDING' || item.status === 'REVIEW_REQUIRED'
     }
     if (filter === 'ended') {
-      return item.status === 'VERIFIED' || item.status === 'CANCELLED' || item.status === 'EXPIRED'
+      return item.status === 'VERIFIED' || item.status === 'CANCELLED' || item.status === 'EXPIRED' || item.status === 'FAILED'
     }
     return true
   })

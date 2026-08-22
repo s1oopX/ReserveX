@@ -15,7 +15,7 @@ export function SlotStatusBadge({ status }: { status: SlotStatusType }) {
   }
 }
 
-export type ReservationStatusType = 'CONFIRMED' | 'PENDING' | 'VERIFIED' | 'CANCELLED' | 'EXPIRED'
+export type ReservationStatusType = 'CONFIRMED' | 'PENDING' | 'VERIFIED' | 'CANCELLED' | 'EXPIRED' | 'REVIEW_REQUIRED' | 'FAILED'
 
 export function ReservationStatusBadge({ status }: { status: ReservationStatusType }) {
   switch (status) {
@@ -29,5 +29,9 @@ export function ReservationStatusBadge({ status }: { status: ReservationStatusTy
       return <Badge variant="outline" className="text-muted-foreground bg-muted/30">已取消</Badge>
     case 'EXPIRED':
       return <Badge variant="outline" className="text-amber-800 bg-amber-50 border-amber-200">已过期</Badge>
+    case 'REVIEW_REQUIRED':
+      return <Badge variant="outline" className="text-amber-800 bg-amber-50 border-amber-200">人工处理中</Badge>
+    case 'FAILED':
+      return <Badge variant="destructive">处理失败</Badge>
   }
 }

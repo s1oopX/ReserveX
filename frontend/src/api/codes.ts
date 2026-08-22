@@ -25,6 +25,7 @@ export const Code = {
   // 预约
   RESERVATION_NOT_FOUND: 'RESERVATION_NOT_FOUND',
   RESERVATION_CONFIRMING: 'RESERVATION_CONFIRMING',
+  RESERVATION_NOT_STARTED: 'RESERVATION_NOT_STARTED',
   ALREADY_CANCELLED: 'ALREADY_CANCELLED',
   ALREADY_EXPIRED: 'ALREADY_EXPIRED',
 
@@ -34,14 +35,18 @@ export const Code = {
   QR_EXPIRED: 'QR_EXPIRED',
 
   // 账号
-  EMAIL_TAKEN: 'EMAIL_TAKEN',
-  PHONE_TAKEN: 'PHONE_TAKEN',
+  REGISTRATION_CONFLICT: 'REGISTRATION_CONFLICT',
+  REGISTRATION_CODE_INVALID: 'REGISTRATION_CODE_INVALID',
   LOGIN_FAILED: 'LOGIN_FAILED',
+  REFRESH_IN_PROGRESS: 'REFRESH_IN_PROGRESS',
   ACCOUNT_BANNED: 'ACCOUNT_BANNED',
   PASSWORD_CHANGE_REQUIRED: 'PASSWORD_CHANGE_REQUIRED',
 
   // 协议层
   BAD_REQUEST: 'BAD_REQUEST',
+  PRECONDITION_REQUIRED: 'PRECONDITION_REQUIRED',
+  PRECONDITION_FAILED: 'PRECONDITION_FAILED',
+  STATE_CONFLICT: 'STATE_CONFLICT',
   NOT_FOUND: 'NOT_FOUND',
   FORBIDDEN: 'FORBIDDEN',
   UNAUTHORIZED: 'UNAUTHORIZED',
@@ -71,11 +76,12 @@ export const CodeText: Record<string, string> = {
   [Code.QUOTA_USED]: '您今天已有预约',
   [Code.CAPTCHA_REQUIRED]: '请先完成图形验证',
   [Code.CAPTCHA_INVALID]: '验证码错误,请重试',
-  [Code.RATE_LIMITED]: '预约人数较多,请稍后重试',
+  [Code.RATE_LIMITED]: '请求过于频繁,请稍后重试',
   [Code.SERVICE_DEGRADED]: '系统繁忙,请稍后重试',
 
   [Code.RESERVATION_NOT_FOUND]: '预约不存在',
   [Code.RESERVATION_CONFIRMING]: '预约正在确认,请稍候重试',
+  [Code.RESERVATION_NOT_STARTED]: '预约场次尚未开始',
   [Code.ALREADY_CANCELLED]: '已取消,无法操作',
   [Code.ALREADY_EXPIRED]: '已过期,无法操作',
 
@@ -83,12 +89,16 @@ export const CodeText: Record<string, string> = {
   [Code.QR_INVALID]: '无效二维码',
   [Code.QR_EXPIRED]: '二维码已过期,请刷新',
 
-  [Code.EMAIL_TAKEN]: '邮箱已注册',
-  [Code.PHONE_TAKEN]: '手机号已注册',
+  [Code.REGISTRATION_CONFLICT]: '邮箱或手机号已注册',
+  [Code.REGISTRATION_CODE_INVALID]: '邮箱验证码错误或已过期',
   [Code.LOGIN_FAILED]: '邮箱或密码错误',
+  [Code.REFRESH_IN_PROGRESS]: '凭证正在刷新,请稍候重试',
   [Code.ACCOUNT_BANNED]: '账号已封禁,请联系管理员',
 
   [Code.BAD_REQUEST]: '请求参数不合法',
+  [Code.PRECONDITION_REQUIRED]: '缺少资源版本条件,请刷新后重试',
+  [Code.PRECONDITION_FAILED]: '资源版本已变化,请刷新后重试',
+  [Code.STATE_CONFLICT]: '资源状态已变化,请刷新后重试',
   [Code.NOT_FOUND]: '资源不存在',
   [Code.FORBIDDEN]: '无权操作',
   [Code.UNAUTHORIZED]: '请先登录',

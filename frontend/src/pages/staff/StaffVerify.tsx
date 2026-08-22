@@ -23,7 +23,7 @@ export default function StaffVerify() {
   const scanInputRef = useRef<HTMLInputElement>(null)
 
   const [manualRno, setManualRno] = useState<string>('')
-  const [maskedConfirm, setMaskedConfirm] = useState<string>('')
+  const [idCardLast4, setIdCardLast4] = useState<string>('')
   const [manualBusy, setManualBusy] = useState<boolean>(false)
   const [confirmOpen, setConfirmOpen] = useState<boolean>(false)
 
@@ -84,13 +84,13 @@ export default function StaffVerify() {
   }
 
   const handleManualSubmit = async () => {
-    if (!manualRno.trim() || !maskedConfirm.trim() || manualBusy) return
+    if (!manualRno.trim() || !idCardLast4.trim() || manualBusy) return
     setManualBusy(true)
     setConfirmOpen(false)
     setVerifyResult(null)
 
     try {
-      const res = await staffApi.verifyManual(manualRno.trim(), maskedConfirm.trim())
+      const res = await staffApi.verifyManual(manualRno.trim(), idCardLast4.trim().toUpperCase())
       setVerifyResult({
         type: 'success',
         reservationNo: res.reservationNo,
@@ -230,7 +230,7 @@ export default function StaffVerify() {
               <form
                 onSubmit={(e) => {
                   e.preventDefault()
-                  if (manualRno.trim() && maskedConfirm.trim()) setConfirmOpen(true)
+                  if (manualRno.trim() && idCardLast4.trim()) setConfirmOpen(true)
                 }}
                 className="space-y-3.5"
               >
@@ -248,18 +248,21 @@ export default function StaffVerify() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="manual-masked">脱敏身份证号确认值</Label>
+                  <Label htmlFor="manual-last4">身份证末四位</Label>
                   <Input
-                    id="manual-masked"
+                    id="manual-last4"
                     type="text"
                     required
-                    placeholder="如: 110101********001X"
-                    value={maskedConfirm}
-                    onChange={(e) => setMaskedConfirm(e.target.value)}
+                    inputMode="text"
+                    maxLength={4}
+                    pattern="[0-9]{3}[0-9Xx]"
+                    placeholder="请输入游客证件末四位"
+                    value={idCardLast4}
+                    onChange={(e) => setIdCardLast4(e.target.value.toUpperCase())}
                     className="font-mono h-11"
                   />
                   <p className="text-[11px] text-muted-foreground">
-                    请输入完整脱敏串，需与后端预约记录保存的脱敏身份证号精确一致。
+                    请让游客现场出示证件，输入末四位；最后一位为 X 时请使用 X。
                   </p>
                 </div>
 
@@ -272,7 +275,7 @@ export default function StaffVerify() {
 
                 <Button
                   type="submit"
-                  disabled={manualBusy || !manualRno.trim() || !maskedConfirm.trim()}
+                  disabled={manualBusy || !manualRno.trim() || !idCardLast4.trim()}
                   className="w-full min-h-[44px] font-semibold"
                 >
                   {manualBusy ? '处理中…' : '提交手工核销二次确认'}
@@ -309,7 +312,7 @@ export default function StaffVerify() {
             <p>您即将对以下预约进行手工核销录入：</p>
             <div className="rounded bg-muted p-3 text-xs font-mono space-y-1">
               <div>预约编号: {manualRno}</div>
-              <div>脱敏证件确认: {maskedConfirm}</div>
+                  <div>证件末四位: {idCardLast4}</div>
             </div>
             <div className="text-xs text-muted-foreground">
               此操作将向审计日志写入 MANUAL_VERIFY 操作记录。

@@ -19,7 +19,7 @@ export interface ReservationVO {
   slotId: Id
   slotDate: string
   slotHour: number
-  status: 'PENDING' | 'CONFIRMED' | 'VERIFIED' | 'CANCELLED' | 'EXPIRED'
+  status: 'PENDING' | 'CONFIRMED' | 'VERIFIED' | 'CANCELLED' | 'EXPIRED' | 'REVIEW_REQUIRED' | 'FAILED'
   version: number
   createAt: string
   verifyTime: string | null
@@ -42,13 +42,14 @@ export const reservationApi = {
   getSlot: (slotId: Id) => http.get<SlotVO>(`/slots/${slotId}`),
 
   grab: (slotId: Id, captchaToken?: string) =>
-    http.post<GrabResult>('/reservation/grab', { slotId, captchaToken }),
+    http.post<GrabResult>('/reservations', { slotId, captchaToken }),
 
-  mine: () => http.get<ReservationVO[]>('/reservation/mine'),
+  mine: () => http.get<ReservationVO[]>('/reservations'),
 
-  detail: (rno: Id) => http.get<ReservationVO>(`/reservation/${rno}`),
+  detail: (rno: Id) => http.get<ReservationVO>(`/reservations/${rno}`),
 
-  qr: (rno: Id) => http.get<QrVO>(`/reservation/${rno}/qr`),
+  qr: (rno: Id) => http.get<QrVO>(`/reservations/${rno}/qr`),
 
-  cancel: (rno: Id) => http.post<null>(`/reservation/${rno}/cancel`),
+  cancel: (rno: Id, version: number) => http.patch<ReservationVO>(
+    `/reservations/${rno}`, { status: 'CANCELLED' }, { 'If-Match': `"${version}"` }),
 }

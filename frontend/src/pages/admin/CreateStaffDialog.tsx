@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { adminApi } from '@/api/admin'
 import { isApiError } from '@/api/http'
 import { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from '@/components/ui/dialog'
@@ -18,6 +18,7 @@ export function CreateStaffDialog({ onClose, onDone }: { onClose: () => void; on
   const [idCard, setIdCard] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
+  const idempotencyKey = useRef(crypto.randomUUID())
 
   const validate = (): string | null => {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return '邮箱格式不合法'
@@ -35,9 +36,13 @@ export function CreateStaffDialog({ onClose, onDone }: { onClose: () => void; on
     setSubmitting(true)
     setErrorMsg('')
     adminApi
-      .createStaff(email, password, phone, idCard)
-      .then(() => {
-        toast.success('STAFF 账号创建成功', '新建成功')
+      .createStaff(email, password, phone, idCard, idempotencyKey.current)
+      .then((created) => {
+        if (created.ready) {
+          toast.success('STAFF 账号创建成功', '新建成功')
+        } else {
+          toast.info('创建请求已受理，账号仍在初始化', '处理中')
+        }
         onDone()
       })
       .catch((e) => {

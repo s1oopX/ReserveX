@@ -103,7 +103,7 @@ export default function SlotList() {
   const fetchCaptcha = useCallback(async () => {
     setCaptchaBusy(true)
     try {
-      const data = await captchaApi.get()
+      const data = await captchaApi.create()
       setCaptcha(data)
       setCaptchaInput('')
     } catch {
