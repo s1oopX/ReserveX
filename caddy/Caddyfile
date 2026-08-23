@@ -60,6 +60,10 @@
 		# backend 只信任来自 edge 网络的 Caddy。丢弃所有客户端可伪造的
 		# Forwarded/X-Forwarded-*，再从当前连接重建来源、协议与 Host。
 		reverse_proxy backend:8080 {
+			transport http {
+				dial_timeout 2s
+				response_header_timeout 15s
+			}
 			header_up -Forwarded
 			header_up -X-Forwarded-For
 			header_up -X-Forwarded-Proto

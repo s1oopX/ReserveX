@@ -429,7 +429,7 @@ public class ReconcileService {
     }
 
     public List<ReconcileLog> diffs() {
-        return reconcileMapper.selectWithDiff(null, 100);
+        return reconcileMapper.selectWithDiff(null, time.today(), 100);
     }
 
     public List<ReconcileLog> latest() {
@@ -441,13 +441,14 @@ public class ReconcileService {
     }
 
     public Dashboard dashboard() {
-        List<Slot> slots = slotMapper.selectByDate(time.today());
+        LocalDate today = time.today();
+        List<Slot> slots = slotMapper.selectByDate(today);
         long reservations = reservationMapper.selectCount(new LambdaQueryWrapper<Reservation>()
-                .eq(Reservation::getSlotDate, time.today()));
+                .eq(Reservation::getSlotDate, today));
         long verified = reservationMapper.selectCount(new LambdaQueryWrapper<Reservation>()
-                .eq(Reservation::getSlotDate, time.today())
+                .eq(Reservation::getSlotDate, today)
                 .eq(Reservation::getStatus, 1));
-        long diff = reconcileMapper.countCurrentWithDiff();
+        long diff = reconcileMapper.countCurrentWithDiff(today);
         long stuck = stuckMapper.selectCount(new LambdaQueryWrapper<StuckReservation>()
                 .in(StuckReservation::getStatus, 0, 4));
         return new Dashboard(slots.size(), reservations, verified, diff, stuck);
@@ -608,6 +609,7 @@ public class ReconcileService {
     }
 
     private int finishRollback(long rno, long resolverId) {
+        java.util.concurrent.atomic.AtomicBoolean transitioned = new java.util.concurrent.atomic.AtomicBoolean();
         java.util.function.Supplier<Integer> finish = () -> {
             int n = stuckMapper.transition(rno, 4, 2, resolverId, time.now());
             if (n == 0) {
@@ -617,10 +619,30 @@ public class ReconcileService {
                 }
                 throw new BizException(ErrorCode.STATE_CONFLICT, "卡单已被其他人员处理");
             }
+            transitioned.set(true);
             recordRollbackAudit(rno, resolverId);
             return n;
         };
-        return singleTx == null ? finish.get() : singleTx.execute(status -> finish.get());
+        try {
+            return singleTx == null ? finish.get() : singleTx.execute(status -> finish.get());
+        } catch (RuntimeException e) {
+            if (transitioned.get()) {
+                releaseRollbackAfterFinishFailure(rno, resolverId, e);
+            }
+            throw e;
+        }
+    }
+
+    private void releaseRollbackAfterFinishFailure(long rno, long resolverId, RuntimeException cause) {
+        try {
+            int fromStatus = singleTx == null ? 2 : 4;
+            if (stuckMapper.transition(rno, fromStatus, 0, resolverId, time.now()) != 1) {
+                log.error("卡单完成事务失败后未能释放 claim rno={}", rno);
+            }
+        } catch (RuntimeException releaseError) {
+            cause.addSuppressed(releaseError);
+            log.error("卡单完成事务失败且释放 claim 异常 rno={}", rno, releaseError);
+        }
     }
 
     private void releaseRollbackClaim(long rno, long resolverId, int claimed) {

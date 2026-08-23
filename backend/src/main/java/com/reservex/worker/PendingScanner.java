@@ -24,6 +24,8 @@ import java.util.Set;
 @Component
 public class PendingScanner {
 
+    private static final String LEGACY_HASH = "0".repeat(64);
+
     private final StringRedisTemplate redis;
     private final RocketMQTemplate rocketMQ;
     private final UserMapper userMapper;
@@ -102,7 +104,7 @@ public class PendingScanner {
                 intValue(occupy, "slot_hour", 0), bucketNo, user.getIdCardHash(),
                 value(occupy, "id_card_masked"), longValue(occupy, "valid_until"),
                 longValue(occupy, "create_ts"), "scanner-" + rno,
-                "dup:" + slotDate + ":" + user.getIdCardHash(),
+                "dup:" + slotDate + ":" + value(occupy, "id_card_hash", user.getIdCardHash()),
                 value(occupy, "bucket"), "slot:full:" + slotId);
         Long attempt = lua.evalLong(LuaScripts.Script.REINJECT, java.util.List.of(occupyKey));
         if (attempt == null || attempt == 0) {
@@ -129,9 +131,10 @@ public class PendingScanner {
         stuck.setSlotId(longValue(occupy, "slot_id"));
         stuck.setBucketKey(value(occupy, "bucket"));
         LocalDate slotDate = LocalDate.parse(value(occupy, "slot_date"));
-        stuck.setDupKey("dup:" + slotDate + ":" + (user == null ? "unknown" : user.getIdCardHash()));
+        String idCardHash = value(occupy, "id_card_hash", user == null ? LEGACY_HASH : user.getIdCardHash());
+        stuck.setDupKey("dup:" + slotDate + ":" + idCardHash);
         stuck.setUserId(longValue(occupy, "user_id"));
-        stuck.setIdCardHash(user == null ? "unknown" : user.getIdCardHash());
+        stuck.setIdCardHash(idCardHash);
         stuck.setSlotDate(slotDate);
         stuck.setReinjectCount(count);
         stuck.setLastError(error);
@@ -149,6 +152,11 @@ public class PendingScanner {
             throw new IllegalStateException("occupy 缺字段 " + key);
         }
         return value.toString();
+    }
+
+    private static String value(Map<Object, Object> values, String key, String fallback) {
+        Object value = values.get(key);
+        return value == null ? fallback : value.toString();
     }
 
     private static long longValue(Map<Object, Object> values, String key) {

@@ -67,6 +67,9 @@ public class ReserveXProperties {
             private int minimumIdle = 5;
             private long connectionTimeout = 3000;
             private long maxLifetime = 1_500_000;
+            private int jdbcConnectTimeout = 3000;
+            private int socketTimeout = 5000;
+            private int statementTimeoutSec = 5;
         }
     }
 
@@ -207,7 +210,7 @@ public class ReserveXProperties {
             private int queue = 200;
             private int keepAliveSec = 60;
             /** {@code caller-runs} | {@code abort} | {@code discard} */
-            private String rejected = "caller-runs";
+            private String rejected = "abort";
         }
 
         @Data

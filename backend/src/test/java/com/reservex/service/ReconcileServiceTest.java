@@ -229,6 +229,34 @@ class ReconcileServiceTest {
     }
 
     @Test
+    void auditFailureAfterRollbackReturnsStuckToPending() {
+        StuckReservationMapper stuck = mock(StuckReservationMapper.class);
+        RollbackService rollback = mock(RollbackService.class);
+        StateLogMapper stateLogs = mock(StateLogMapper.class);
+        AuditLogMapper audits = mock(AuditLogMapper.class);
+        StateLog claim = new StateLog();
+        claim.setStatus(4);
+        StateLog done = new StateLog();
+        done.setStatus(3);
+        when(stuck.selectById(RNO)).thenReturn(stuck());
+        when(stuck.transition(eq(RNO), eq(0), eq(4), eq(7L), any())).thenReturn(1);
+        when(stuck.transition(eq(RNO), eq(4), eq(2), eq(7L), any())).thenReturn(1);
+        when(stuck.transition(eq(RNO), eq(2), eq(0), eq(7L), any())).thenReturn(1);
+        when(rollback.compensate(any())).thenReturn(true);
+        when(stateLogs.selectById("rx-" + RNO)).thenReturn(claim, done);
+        when(audits.insert((AuditLog) any(AuditLog.class))).thenReturn(0);
+
+        ReconcileService service = new ReconcileService(mock(SlotMapper.class), mock(SlotBucketMapper.class),
+                mock(ReservationMapper.class), mock(IdCardRouteMapper.class), mock(ReconcileLogMapper.class),
+                audits, stuck, stateLogs, mock(VerificationLogMapper.class),
+                mock(StringRedisTemplate.class, org.mockito.Mockito.RETURNS_DEEP_STUBS),
+                mock(IdGenerator.class), mock(TimeSupport.class), rollback, new ReserveXProperties());
+
+        assertThrows(BizException.class, () -> service.handleAction("stuck", RNO, "rollback", 7L));
+        verify(stuck).transition(eq(RNO), eq(2), eq(0), eq(7L), any());
+    }
+
+    @Test
     void concurrentFinishIsReportedAsStateConflict() {
         StuckReservationMapper stuck = mock(StuckReservationMapper.class);
         RollbackService rollback = mock(RollbackService.class);
@@ -281,7 +309,7 @@ class ReconcileServiceTest {
         TimeSupport time = mock(TimeSupport.class);
         when(time.today()).thenReturn(today);
         when(slots.selectByDate(today)).thenReturn(List.of());
-        when(logs.countCurrentWithDiff()).thenReturn(3L);
+        when(logs.countCurrentWithDiff(today)).thenReturn(3L);
 
         ReconcileService service = new ReconcileService(slots, mock(SlotBucketMapper.class),
                 reservations, mock(IdCardRouteMapper.class), logs, stuck,
@@ -291,7 +319,7 @@ class ReconcileServiceTest {
                 new ReserveXProperties());
 
         assertEquals(3L, service.dashboard().reconcileDiffCount());
-        verify(logs).countCurrentWithDiff();
+        verify(logs).countCurrentWithDiff(today);
     }
 
     private static StuckReservation stuck() {

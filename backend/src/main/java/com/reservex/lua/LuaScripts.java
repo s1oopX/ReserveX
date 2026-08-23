@@ -79,7 +79,7 @@ public class LuaScripts {
      * {@code grab.lua} 的 {@code KEYS[1]} 是命中桶、{@code KEYS[2..n]} 必须是
      * <b>环形</b>借桶顺序({@code (bucket_no + i) % bucket_count}),末尾两位
      * {@code KEYS[n+1]=ratelimit:user:{userId}}、{@code KEYS[n+2]=ratelimit:slot:{slotId}}
-     * 是 D5 限流折叠进来的(保持 2 round-trip)。ARGV[14]/ARGV[15] 是 user/slot rps。
+     * 是 D5 限流折叠进来的(保持 2 round-trip)。ARGV[15]/ARGV[16] 是 user/slot rps。
      * 顺序传错不会报错,只会让借桶偏向固定几个桶 → 倾斜,而压测埋点
      * {@code stats:borrow:*} 是唯一能看出来的地方。
      *

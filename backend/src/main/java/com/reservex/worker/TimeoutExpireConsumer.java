@@ -10,6 +10,7 @@ import com.reservex.mapper.sharding.ReservationTransitionOutboxMapper;
 import com.reservex.mapper.single.ConsumedEventMapper;
 import com.reservex.mapper.single.StateLogMapper;
 import com.reservex.message.TimeoutExpireMessage;
+import com.reservex.service.ReservationService;
 import com.reservex.service.ReservationTransitionOutboxService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -18,6 +19,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.slf4j.MDC;
 
 import java.time.LocalDateTime;
@@ -33,6 +35,7 @@ public class TimeoutExpireConsumer implements RocketMQListener<TimeoutExpireMess
     private final ReservationTransitionOutboxService transitionOutbox;
     private final ConsumedEventMapper consumedMapper;
     private final StateLogMapper stateLogMapper;
+    private final StringRedisTemplate redis;
     private final TimeSupport time;
     private final String persistenceGroup;
     private final TransactionTemplate shardingTx;
@@ -42,6 +45,7 @@ public class TimeoutExpireConsumer implements RocketMQListener<TimeoutExpireMess
                                  ReservationTransitionOutboxService transitionOutbox,
                                  ConsumedEventMapper consumedMapper,
                                  StateLogMapper stateLogMapper,
+                                 StringRedisTemplate redis,
                                  TimeSupport time,
                                  ReserveXProperties props,
                                  @Qualifier("shardingTxManager") PlatformTransactionManager txManager) {
@@ -50,6 +54,7 @@ public class TimeoutExpireConsumer implements RocketMQListener<TimeoutExpireMess
         this.transitionOutbox = transitionOutbox;
         this.consumedMapper = consumedMapper;
         this.stateLogMapper = stateLogMapper;
+        this.redis = redis;
         this.time = time;
         this.persistenceGroup = props.getConsumer().getGroups().get("persistence");
         this.shardingTx = new TransactionTemplate(txManager);
@@ -67,6 +72,11 @@ public class TimeoutExpireConsumer implements RocketMQListener<TimeoutExpireMess
 
     private void expire(TimeoutExpireMessage message) {
         if (consumedMapper.existsBy(persistenceGroup, "rc-" + message.reservationNo()) == 0) {
+            String occupyKey = ReservationService.occupyKey(message.reservationNo());
+            if (Boolean.TRUE.equals(redis.hasKey(occupyKey))) {
+                redis.opsForHash().put(occupyKey, "expired", "1");
+                return;
+            }
             throw new IllegalStateException("persistence 尚未完成 rno=" + message.reservationNo());
         }
         String xid = "rx-" + message.reservationNo();

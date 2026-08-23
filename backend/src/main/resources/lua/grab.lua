@@ -28,12 +28,13 @@
 -- ARGV[7]  = slot_hour
 -- ARGV[8]  = valid_until(ts)   ← 来自 slot.valid_until 固化字段
 -- ARGV[9]  = id_card_masked
--- ARGV[10] = create_ts
--- ARGV[11] = pending ZSet key
--- ARGV[12] = slot_full_key (slot:full:{slot_id})
--- ARGV[13] = slot_full_ttl (秒, = slot_date 当日结束 − now)
--- ARGV[14] = user_rps  (用户级 1 秒固定窗口上限,取 yml ratelimit.user-redis-rps)
--- ARGV[15] = slot_rps  (场次级 1 秒固定窗口上限,取 yml ratelimit.slot-redis-rps)
+-- ARGV[10] = id_card_hash (scanner/stuck 回滚证据)
+-- ARGV[11] = create_ts
+-- ARGV[12] = pending ZSet key
+-- ARGV[13] = slot_full_key (slot:full:{slot_id})
+-- ARGV[14] = slot_full_ttl (秒, = slot_date 当日结束 − now)
+-- ARGV[15] = user_rps  (用户级 1 秒固定窗口上限,取 yml ratelimit.user-redis-rps)
+-- ARGV[16] = slot_rps  (场次级 1 秒固定窗口上限,取 yml ratelimit.slot-redis-rps)
 -- ============================================================================
 
 -- 第零道:限流(D5)。1 秒固定窗口:INCR + 首次 EXPIRE。
@@ -42,8 +43,8 @@
 local n = #KEYS
 local rlUserKey   = KEYS[n - 1]
 local rlSlotKey   = KEYS[n]
-local userRps = tonumber(ARGV[14])
-local slotRps = tonumber(ARGV[15])
+local userRps = tonumber(ARGV[15])
+local slotRps = tonumber(ARGV[16])
 local userCnt = redis.call('INCR', rlUserKey)
 if userCnt == 1 then redis.call('EXPIRE', rlUserKey, 1) end
 if userCnt > userRps then return -2 end
@@ -64,11 +65,12 @@ local function occupy(bucketKey)
     redis.call('HSET', 'occupy:'..ARGV[1],
         'slot_id', ARGV[2], 'slot_date', ARGV[6], 'slot_hour', ARGV[7],
         'valid_until', ARGV[8], 'bucket', bucketKey, 'bucket_no', bno,
-        'user_id', ARGV[3], 'id_card_masked', ARGV[9], 'create_ts', ARGV[10])
+        'user_id', ARGV[3], 'id_card_masked', ARGV[9], 'id_card_hash', ARGV[10],
+        'create_ts', ARGV[11])
     -- bucket(完整桶 key,10.2a INCR 用)+ bucket_no(裸号)显式双存:
     -- 10.2a 回滚靠 HGET 'bucket' 拿完整 key,少一个就无法回滚到正确的桶
     -- occupy 是扣库存后的恢复证据，只能由成功消费或明确补偿删除。
-    redis.call('ZADD', ARGV[11], ARGV[10], ARGV[1]) -- D2 pending 索引
+    redis.call('ZADD', ARGV[12], ARGV[11], ARGV[1]) -- D2 pending 索引
     redis.call('INCR', 'stats:bucket:'..bucketKey..':hit')  -- 压测埋点
     return 1
 end
@@ -87,6 +89,6 @@ for i = 2, n - 2 do
 end
 
 -- 全空:真售罄
-redis.call('SET', ARGV[12], 1, 'EX', ARGV[13])   -- 写约满标记(与判满同原子,防增容竞态)
+redis.call('SET', ARGV[13], 1, 'EX', ARGV[14])   -- 写约满标记(与判满同原子,防增容竞态)
 redis.call('DEL', ARGV[4])                       -- 回滚判重标记:本次未占号,不应阻塞该证当天重试他场
 return 0  -- 已约满

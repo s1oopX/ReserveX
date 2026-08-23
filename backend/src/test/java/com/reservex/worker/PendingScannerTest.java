@@ -3,6 +3,7 @@ package com.reservex.worker;
 import com.reservex.common.TimeSupport;
 import com.reservex.config.ReserveXProperties;
 import com.reservex.entity.User;
+import com.reservex.entity.StuckReservation;
 import com.reservex.mapper.sharding.UserMapper;
 import com.reservex.mapper.single.StuckReservationMapper;
 import com.reservex.message.ReservationCreatedMessage;
@@ -10,6 +11,7 @@ import com.reservex.lua.LuaScripts;
 import com.reservex.service.ReservationService;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
@@ -31,6 +33,38 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 
 class PendingScannerTest {
+
+    @Test
+    void missingUserStillPersistsAValidRollbackHashFromOccupy() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        ZSetOperations<String, String> zset = mock(ZSetOperations.class);
+        @SuppressWarnings("unchecked")
+        HashOperations<String, Object, Object> hash = mock(HashOperations.class);
+        when(redis.opsForZSet()).thenReturn(zset);
+        when(redis.opsForHash()).thenReturn(hash);
+        when(zset.rangeByScore(ReservationService.PENDING_KEY, 0, 970_000, 0, 500))
+                .thenReturn(new LinkedHashSet<>(List.of("10")));
+        String occupyKey = ReservationService.occupyKey(10L);
+        String idCardHash = "0".repeat(64);
+        when(hash.entries(occupyKey)).thenReturn(Map.of(
+                "user_id", "7", "slot_id", "99", "slot_date", "2026-08-16",
+                "bucket", "slot:99:b:2", "reinject_count", "0"));
+        when(redis.persist(occupyKey)).thenReturn(true);
+        StuckReservationMapper stuck = mock(StuckReservationMapper.class);
+        TimeSupport time = mock(TimeSupport.class);
+        when(time.now()).thenReturn(LocalDateTime.of(1970, 1, 1, 0, 16, 40));
+        when(time.zone()).thenReturn(ZoneId.of("UTC"));
+
+        new PendingScanner(redis, mock(RocketMQTemplate.class), mock(UserMapper.class),
+                stuck, new ReserveXProperties(), time, mock(LuaScripts.class)).scan();
+
+        ArgumentCaptor<StuckReservation> captured = ArgumentCaptor.forClass(StuckReservation.class);
+        verify(stuck).insertIgnore(captured.capture());
+        org.junit.jupiter.api.Assertions.assertEquals(idCardHash, captured.getValue().getIdCardHash());
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "dup:2026-08-16:" + idCardHash, captured.getValue().getDupKey());
+    }
 
     @Test
     void malformedOccupyDoesNotAbortFollowingEntries() {

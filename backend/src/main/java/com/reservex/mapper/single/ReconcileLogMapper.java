@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.reservex.entity.ReconcileLog;
 import org.apache.ibatis.annotations.Param;
 
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -24,10 +25,11 @@ public interface ReconcileLogMapper extends BaseMapper<ReconcileLog> {
 
     /** 对账中心看板:只查每个任务/场次最新一轮仍未收敛的差异。 */
     List<ReconcileLog> selectWithDiff(@Param("taskType") String taskType,
+                                      @Param("currentDate") LocalDate currentDate,
                                       @Param("limit") Integer limit);
 
     /** 当前仍未收敛的任务/场次数；不把历史差异和已完成动作累计进去。 */
-    long countCurrentWithDiff();
+    long countCurrentWithDiff(@Param("currentDate") LocalDate currentDate);
 
     /** 对账中心健康视图：即使 diff=0 也展示最近运行证据。 */
     List<ReconcileLog> selectLatest(@Param("limit") Integer limit);

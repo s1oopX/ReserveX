@@ -11,6 +11,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test:auth": "node --experimental-strip-types --test scripts/auth-session.test.mjs",
+    "test:http": "node --test scripts/http-timeout.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx --max-warnings 0"
   },

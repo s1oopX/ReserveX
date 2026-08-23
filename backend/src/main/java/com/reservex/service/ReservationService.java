@@ -160,7 +160,7 @@ public class ReservationService {
         Long result = lua.evalLong(LuaScripts.Script.GRAB, keys,
                 Long.toString(reservationNo), Long.toString(slotId), Long.toString(userId),
                 dupKey, Long.toString(endTtl), slotDate.toString(), Integer.toString(slotHour),
-                Long.toString(validUntilEpoch), idCardMasked, Long.toString(createMillis),
+                Long.toString(validUntilEpoch), idCardMasked, idCardHash, Long.toString(createMillis),
                 PENDING_KEY, fullKey, Long.toString(endTtl),
                 Integer.toString(props.getRatelimit().getUserRedisRps()),
                 Integer.toString(props.getRatelimit().getSlotRedisRps()));
@@ -259,7 +259,7 @@ public class ReservationService {
         }
 
         // 消费窗口通常小于 1 秒；从 pending 索引补最近在途记录，不全库 SCAN occupy:*。
-        Set<String> pending = redis.opsForZSet().range(PENDING_KEY, 0,
+        Set<String> pending = redis.opsForZSet().reverseRange(PENDING_KEY, 0,
                 Math.max(0, props.getPending().getScanPageSize() - 1));
         if (pending != null) {
             for (String raw : pending) {

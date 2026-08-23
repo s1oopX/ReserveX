@@ -90,6 +90,28 @@ class DeadLetterServiceTest {
         org.mockito.Mockito.verifyNoInteractions(mapper);
     }
 
+    @Test
+    void replayKeepsReplayedStatusWhenAuditWriteFails() {
+        DeadLetterMessageMapper mapper = mock(DeadLetterMessageMapper.class);
+        RocketMQTemplate rocketMQ = mock(RocketMQTemplate.class);
+        AuditLogMapper audits = mock(AuditLogMapper.class);
+        IdGenerator ids = mock(IdGenerator.class);
+        TimeSupport time = mock(TimeSupport.class);
+        LocalDateTime now = LocalDateTime.of(2026, 8, 18, 12, 0);
+        when(time.now()).thenReturn(now);
+        when(mapper.selectById("msg-1")).thenReturn(message(0), message(1));
+        when(mapper.claimReplay(eq("msg-1"), any(), eq(now), eq(7L))).thenReturn(1);
+        when(mapper.completeReplay("msg-1", now, 7L)).thenReturn(1);
+        when(ids.nextId()).thenReturn(99L);
+        when(audits.insert((AuditLog) any(AuditLog.class))).thenReturn(0);
+
+        DeadLetterService.View result = new DeadLetterService(mapper, audits, ids, rocketMQ, time)
+                .replay("msg-1", 7L);
+
+        assertEquals("REPLAYED", result.status());
+        verify(mapper).completeReplay("msg-1", now, 7L);
+    }
+
     private static DeadLetterMessage message(int status) {
         DeadLetterMessage message = new DeadLetterMessage();
         message.setMessageId("msg-1");

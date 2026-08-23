@@ -8,6 +8,9 @@ import com.reservex.entity.User;
 import com.reservex.mapper.sharding.ReservationMapper;
 import com.reservex.mapper.sharding.UserMapper;
 import com.reservex.mapper.single.SlotMapper;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -59,6 +62,7 @@ public class ReminderWorker {
     private final StringRedisTemplate redis;
     private final JavaMailSender mailSender;
     private final String mailFrom;
+    private final CircuitBreaker smtpCircuitBreaker;
 
     public ReminderWorker(ReservationMapper reservationMapper,
                            UserMapper userMapper,
@@ -66,7 +70,8 @@ public class ReminderWorker {
                            TimeSupport time,
                            ReserveXProperties props,
                            StringRedisTemplate redis,
-                           @Autowired(required = false) JavaMailSender mailSender) {
+                           @Autowired(required = false) JavaMailSender mailSender,
+                           CircuitBreakerRegistry circuitBreakerRegistry) {
         this.reservationMapper = reservationMapper;
         this.userMapper = userMapper;
         this.slotMapper = slotMapper;
@@ -75,6 +80,7 @@ public class ReminderWorker {
         this.redis = redis;
         this.mailSender = mailSender;
         this.mailFrom = "reservex@qq.com";
+        this.smtpCircuitBreaker = circuitBreakerRegistry.circuitBreaker("smtp");
     }
 
     @Scheduled(cron = "${reservex.reconcile.crons.reminder:0 */5 * * * ?}")
@@ -138,8 +144,7 @@ public class ReminderWorker {
                         sentKey, REMINDER_SENT_VALUE, Duration.ofSeconds(ttlSec));
                 sent++;
             } else {
-                // 发送失败立即释放租约，不等下一次过期。
-                redis.delete(sentKey);
+                // 保留短租约；失败后由下一扫描周期重试，避免多实例立即撞击故障 SMTP。
             }
         }
         if (sent > 0 || skipped > 0) {
@@ -157,12 +162,15 @@ public class ReminderWorker {
         msg.setSubject("您的湿地预约提醒:" + r.getSlotDate() + " " + slotHour + ":00");
         msg.setText(buildBody(r, slotHour));
         try {
-            mailSender.send(msg);
+            smtpCircuitBreaker.executeRunnable(() -> mailSender.send(msg));
             return true;
         } catch (MailAuthenticationException e) {
             // 演示环境 SMTP 密码是 placeholder,发不出邮件属预期。
             log.warn("演示环境邮件不可用(SMTP 认证失败),已跳过发送 rno={}",
                     r.getReservationNo());
+            return false;
+        } catch (CallNotPermittedException e) {
+            log.warn("SMTP 熔断中,提醒延后 rno={}", r.getReservationNo());
             return false;
         } catch (RuntimeException e) {
             log.error("提醒邮件发送失败 rno={} errorType={}", r.getReservationNo(),

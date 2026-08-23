@@ -31,8 +31,8 @@ public class ExecutorConfig implements SchedulingConfigurer {
     /**
      * 邮件池:界外调用(SMTP),超时高、不可控,必须独立且**有界**。
      *
-     * <p>拒绝策略 {@code caller-runs}:队列满时由调用线程执行,形成自然反压而不丢邮件。
-     * 提醒邮件晚发几秒可接受,丢了则用户白等。
+     * <p>拒绝策略 {@code abort}:队列满时本轮提醒快速失败,下个扫描周期会再次尝试。
+     * 不能用 caller-runs —— 调用线程是调度线程,SMTP 卡住会拖停其他定时任务。
      */
     @Bean("mailExecutor")
     public ThreadPoolTaskExecutor mailExecutor() {

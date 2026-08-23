@@ -17,6 +17,7 @@ class GrabLuaContractTest {
             assertThat(input).isNotNull();
             String script = new String(input.readAllBytes(), StandardCharsets.UTF_8);
             assertThat(script).doesNotContain("redis.call('EXPIRE', 'occupy:'");
+            assertThat(script).contains("'id_card_hash', ARGV[10]");
         }
     }
 }

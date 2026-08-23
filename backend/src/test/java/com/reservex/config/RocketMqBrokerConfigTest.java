@@ -34,6 +34,11 @@ class RocketMqBrokerConfigTest {
         String compose = Files.readString(findRepositoryFile("docker-compose.yml"));
         assertThat(compose).contains("WORKER_ID=${WORKER_ID:?WORKER_ID must be set explicitly (0..31)}");
         assertThat(compose).doesNotContain("WORKER_ID=${WORKER_ID:-0}");
+        assertThat(compose).contains("test: [\"CMD\", \"wget\", \"-q\", \"-O\", \"/dev/null\", \"http://127.0.0.1/\"]");
+
+        String caddyfile = Files.readString(findRepositoryFile("caddy", "Caddyfile"));
+        assertThat(caddyfile).contains("dial_timeout 2s");
+        assertThat(caddyfile).contains("response_header_timeout 15s");
     }
 
     private static Path findRepositoryFile(String... parts) {

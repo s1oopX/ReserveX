@@ -130,6 +130,19 @@ logging:
 # ============================================================================
 # 业务配置(reservex.*)—— 单一真理源
 # ============================================================================
+resilience4j:
+  circuitbreaker:
+    instances:
+      smtp:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 20
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 3s
+        slow-call-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 2
+
 reservex:
   # §7.2:业务时区单一真理源。所有"当日结束/次日零点/valid_until/dup_ttl/QR exp"的计算
   #   都从这里取 ZoneId,**禁止代码里散落 ZoneId.systemDefault()** ——
@@ -147,17 +160,17 @@ reservex:
       url: "jdbc:mysql://${MYSQL_HOST:localhost}:3306/reservex_ds0?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
       username: reservex_app
       password: ${MYSQL_APP_PASSWORD}
-      pool: { maximum-pool-size: 20, minimum-idle: 5, connection-timeout: 3000, max-lifetime: 1500000 }
+      pool: { maximum-pool-size: 20, minimum-idle: 5, connection-timeout: 3000, max-lifetime: 1500000, jdbc-connect-timeout: 3000, socket-timeout: 5000, statement-timeout-sec: 5 }
     ds1:
       url: "jdbc:mysql://${MYSQL_HOST:localhost}:3306/reservex_ds1?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
       username: reservex_app
       password: ${MYSQL_APP_PASSWORD}
-      pool: { maximum-pool-size: 20, minimum-idle: 5, connection-timeout: 3000, max-lifetime: 1500000 }
+      pool: { maximum-pool-size: 20, minimum-idle: 5, connection-timeout: 3000, max-lifetime: 1500000, jdbc-connect-timeout: 3000, socket-timeout: 5000, statement-timeout-sec: 5 }
     single:
       url: "jdbc:mysql://${MYSQL_HOST:localhost}:3306/reservex_single?serverTimezone=Asia/Shanghai&characterEncoding=utf8"
       username: reservex_app
       password: ${MYSQL_APP_PASSWORD}
-      pool: { maximum-pool-size: 30, minimum-idle: 10, connection-timeout: 3000, max-lifetime: 1500000 }
+      pool: { maximum-pool-size: 30, minimum-idle: 10, connection-timeout: 3000, max-lifetime: 1500000, jdbc-connect-timeout: 3000, socket-timeout: 5000, statement-timeout-sec: 5 }
 
   quota:
     # M7 裁定:v1 **固定 1,不可配**。启动时断言 != 1 直接 fail-fast(bootstrap/QuotaGuard)
@@ -255,7 +268,7 @@ reservex:
       max: 4
       queue: 200
       keep-alive-sec: 60
-      rejected: caller-runs      # 队列满即由调用线程执行(自然反压),不丢
+      rejected: abort            # 队列满交给下一轮提醒,不能阻塞调度线程
     reconcile:                   # 11 类对账,分页 + 限速,慢但不紧急
       core: 2
       max: 2

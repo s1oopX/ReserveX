@@ -16,6 +16,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
+import org.springframework.data.redis.core.HashOperations;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.time.LocalDateTime;
 
@@ -36,6 +38,9 @@ class TimeoutExpireConsumerTest {
             mock(ReservationTransitionOutboxService.class);
     private final ConsumedEventMapper consumed = mock(ConsumedEventMapper.class);
     private final StateLogMapper stateLogs = mock(StateLogMapper.class);
+    private final StringRedisTemplate redis = mock(StringRedisTemplate.class);
+    @SuppressWarnings("unchecked")
+    private final HashOperations<String, Object, Object> hashes = mock(HashOperations.class);
     private final TimeSupport time = mock(TimeSupport.class);
     private final PlatformTransactionManager txManager = mock(PlatformTransactionManager.class);
     private TimeoutExpireConsumer consumer;
@@ -47,8 +52,9 @@ class TimeoutExpireConsumerTest {
         ReserveXProperties props = new ReserveXProperties();
         props.getConsumer().getGroups().put("persistence", "cg-persistence");
         when(txManager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
+        when(redis.opsForHash()).thenReturn(hashes);
         consumer = new TimeoutExpireConsumer(reservations, outboxes, publisher,
-                consumed, stateLogs, time, props, txManager);
+                consumed, stateLogs, redis, time, props, txManager);
     }
 
     @Test
@@ -86,6 +92,18 @@ class TimeoutExpireConsumerTest {
 
         verify(outboxes, never()).insert(any(ReservationTransitionOutbox.class));
         verify(publisher, never()).tryPublish(any());
+    }
+
+    @Test
+    void windowExpiryMarksOccupyAndAcknowledgesBeforePersistence() {
+        when(consumed.existsBy("cg-persistence", "rc-10")).thenReturn(0);
+        when(redis.hasKey("occupy:10")).thenReturn(true);
+
+        consumer.onMessage(new TimeoutExpireMessage("te-10", 10L, 7L,
+                LocalDateTime.of(2026, 8, 17, 18, 0), "timeout-10"));
+
+        verify(hashes).put("occupy:10", "expired", "1");
+        verify(reservations, never()).expireByNo(any(), any(), any());
     }
 
     @Test

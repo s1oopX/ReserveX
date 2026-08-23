@@ -10,12 +10,14 @@ import com.reservex.mapper.single.ReconcileLogMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
@@ -35,10 +37,12 @@ import java.time.format.DateTimeFormatter;
 public class ExpiryScanner {
 
     private static final DateTimeFormatter PERIOD = DateTimeFormatter.ofPattern("yyyyMMddHHmm");
+    private static final Duration PUBLISH_GUARD_TTL = Duration.ofMinutes(5);
 
     private final ReservationMapper reservationMapper;
     private final ReconcileLogMapper reconcileMapper;
     private final RocketMQTemplate rocketMQ;
+    private final StringRedisTemplate redis;
     private final IdGenerator idGenerator;
     private final TimeSupport time;
     private final TransactionTemplate singleTx;
@@ -46,12 +50,14 @@ public class ExpiryScanner {
     public ExpiryScanner(ReservationMapper reservationMapper,
                           ReconcileLogMapper reconcileMapper,
                           RocketMQTemplate rocketMQ,
+                          StringRedisTemplate redis,
                           IdGenerator idGenerator,
                           TimeSupport time,
                           @Qualifier("singleTxManager") PlatformTransactionManager singleTxManager) {
         this.reservationMapper = reservationMapper;
         this.reconcileMapper = reconcileMapper;
         this.rocketMQ = rocketMQ;
+        this.redis = redis;
         this.idGenerator = idGenerator;
         this.time = time;
         this.singleTx = new TransactionTemplate(singleTxManager);
@@ -64,9 +70,20 @@ public class ExpiryScanner {
         int total = 0;
         for (Reservation candidate : reservationMapper.selectExpiryCandidates(now, 500)) {
             long rno = candidate.getReservationNo();
-            rocketMQ.syncSend("timeout", new TimeoutExpireMessage(
-                    "te-" + rno, rno, candidate.getUserId(), candidate.getValidUntil(),
-                    "timeout-" + rno));
+            String guardKey = "timeout:publishing:" + rno;
+            if (!Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(
+                    guardKey, "1", PUBLISH_GUARD_TTL))) {
+                continue;
+            }
+            try {
+                rocketMQ.syncSend("timeout", new TimeoutExpireMessage(
+                        "te-" + rno, rno, candidate.getUserId(), candidate.getValidUntil(),
+                        "timeout-" + rno));
+            } catch (RuntimeException e) {
+                redis.delete(guardKey);
+                log.error("过期消息投递失败 rno={}", rno, e);
+                continue;
+            }
             total++;
         }
         if (total > 0) {

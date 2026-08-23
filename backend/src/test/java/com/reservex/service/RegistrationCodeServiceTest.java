@@ -4,6 +4,8 @@ import cn.hutool.crypto.digest.DigestUtil;
 import com.reservex.common.BizException;
 import com.reservex.common.ErrorCode;
 import com.reservex.config.ReserveXProperties;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -28,6 +30,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 
 class RegistrationCodeServiceTest {
 
@@ -43,7 +46,7 @@ class RegistrationCodeServiceTest {
                 eq("3600"), eq("3"), eq("20"));
         JavaMailSender mail = mock(JavaMailSender.class);
         RegistrationCodeService service = new RegistrationCodeService(
-                redis, mail, new ReserveXProperties(), "reservex@qq.com");
+                redis, mail, new ReserveXProperties(), "reservex@qq.com", CircuitBreakerRegistry.ofDefaults());
 
         service.send(" USER@example.com ", "203.0.113.10");
 
@@ -73,7 +76,7 @@ class RegistrationCodeServiceTest {
         doReturn(1L).when(redis).execute(any(DefaultRedisScript.class),
                 eq(List.of(codeKey, failureKey)), eq(DigestUtil.sha256Hex("123456")), eq("5"));
         RegistrationCodeService service = new RegistrationCodeService(
-                redis, mock(JavaMailSender.class), new ReserveXProperties(), "reservex@qq.com");
+                redis, mock(JavaMailSender.class), new ReserveXProperties(), "reservex@qq.com", CircuitBreakerRegistry.ofDefaults());
 
         BizException wrong = assertThrows(BizException.class,
                 () -> service.consume("USER@example.com", "000000", ip));
@@ -94,7 +97,7 @@ class RegistrationCodeServiceTest {
         doReturn(-2L).when(redis).execute(any(DefaultRedisScript.class),
                 eq(List.of(codeKey, failureKey)), eq(DigestUtil.sha256Hex("000000")), eq("5"));
         RegistrationCodeService service = new RegistrationCodeService(
-                redis, mock(JavaMailSender.class), new ReserveXProperties(), "reservex@qq.com");
+                redis, mock(JavaMailSender.class), new ReserveXProperties(), "reservex@qq.com", CircuitBreakerRegistry.ofDefaults());
 
         BizException error = assertThrows(BizException.class,
                 () -> service.consume("user@example.com", "000000", "198.51.100.9"));
@@ -119,7 +122,7 @@ class RegistrationCodeServiceTest {
                 any(String.class), eq(Long.toString(Duration.ofDays(1).toMillis())),
                 eq("3600"), eq("20"));
         RegistrationCodeService service = new RegistrationCodeService(
-                redis, mock(JavaMailSender.class), new ReserveXProperties(), "reservex@qq.com");
+                redis, mock(JavaMailSender.class), new ReserveXProperties(), "reservex@qq.com", CircuitBreakerRegistry.ofDefaults());
 
         assertTrue(service.consumeForRegistration(
                 "user@example.com", "123456", ip, key, fingerprint));
@@ -145,7 +148,7 @@ class RegistrationCodeServiceTest {
         JavaMailSender mail = mock(JavaMailSender.class);
         doThrow(new IllegalStateException("smtp down")).when(mail).send(any(SimpleMailMessage.class));
         RegistrationCodeService service = new RegistrationCodeService(
-                redis, mail, new ReserveXProperties(), "reservex@qq.com");
+                redis, mail, new ReserveXProperties(), "reservex@qq.com", CircuitBreakerRegistry.ofDefaults());
 
         BizException error = assertThrows(BizException.class,
                 () -> service.send("user@example.com", "203.0.113.10"));
@@ -156,6 +159,35 @@ class RegistrationCodeServiceTest {
                 eq(List.of("lock:register-code-send:" + emailHash, "register-code:" + emailHash)),
                 any(String.class), any(String.class), eq("1"));
         verify(redis, never()).delete("register-code:" + emailHash);
+    }
+
+    @Test
+    void repeatedSmtpFailuresOpenTheCircuit() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> values = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(values);
+        when(values.setIfAbsent(any(String.class), any(String.class), eq(Duration.ofMinutes(1))))
+                .thenReturn(true);
+        doReturn(1L).when(redis).execute(any(DefaultRedisScript.class), any(List.class),
+                eq("3600"), eq("3"), eq("20"));
+        JavaMailSender mail = mock(JavaMailSender.class);
+        doThrow(new IllegalStateException("smtp down")).when(mail).send(any(SimpleMailMessage.class));
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.of(CircuitBreakerConfig.custom()
+                .slidingWindowSize(2)
+                .minimumNumberOfCalls(2)
+                .failureRateThreshold(50)
+                .build());
+        RegistrationCodeService service = new RegistrationCodeService(
+                redis, mail, new ReserveXProperties(), "reservex@qq.com", registry);
+
+        for (int i = 0; i < 3; i++) {
+            BizException error = assertThrows(BizException.class,
+                    () -> service.send("user@example.com", "203.0.113.10"));
+            assertEquals(ErrorCode.SERVICE_DEGRADED, error.getErrorCode());
+        }
+
+        verify(mail, times(2)).send(any(SimpleMailMessage.class));
     }
 
     @Test
@@ -170,7 +202,7 @@ class RegistrationCodeServiceTest {
                 .thenReturn(false);
         JavaMailSender mail = mock(JavaMailSender.class);
         RegistrationCodeService service = new RegistrationCodeService(
-                redis, mail, new ReserveXProperties(), "reservex@qq.com");
+                redis, mail, new ReserveXProperties(), "reservex@qq.com", CircuitBreakerRegistry.ofDefaults());
 
         BizException error = assertThrows(BizException.class,
                 () -> service.send("user@example.com", "203.0.113.10"));

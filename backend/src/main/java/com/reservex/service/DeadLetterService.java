@@ -8,6 +8,7 @@ import com.reservex.entity.AuditLog;
 import com.reservex.id.IdGenerator;
 import com.reservex.mapper.single.AuditLogMapper;
 import com.reservex.mapper.single.DeadLetterMessageMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 
 @Service
+@Slf4j
 public class DeadLetterService {
 
     private static final int MESSAGE_ID_MAX_LENGTH = 64;
@@ -109,7 +111,8 @@ public class DeadLetterService {
             mapper.releaseReplay(validMessageId);
             throw new BizException(ErrorCode.SERVICE_DEGRADED, "死信重放失败");
         }
-        completeReplayAndAudit(message, resolverId);
+        completeReplay(message, resolverId);
+        recordReplayAuditSafely(message, resolverId);
         return view(mapper.selectById(validMessageId));
     }
 
@@ -121,17 +124,25 @@ public class DeadLetterService {
         return messageId;
     }
 
-    private void completeReplayAndAudit(DeadLetterMessage message, long resolverId) {
+    private void completeReplay(DeadLetterMessage message, long resolverId) {
         Runnable complete = () -> {
             if (mapper.completeReplay(message.getMessageId(), time.now(), resolverId) != 1) {
                 throw new BizException(ErrorCode.SERVICE_DEGRADED, "死信已发送但状态未收口，请刷新核对");
             }
-            recordReplayAudit(message, resolverId);
         };
         if (singleTx == null) {
             complete.run();
         } else {
             singleTx.executeWithoutResult(status -> complete.run());
+        }
+    }
+
+    private void recordReplayAuditSafely(DeadLetterMessage message, long resolverId) {
+        try {
+            recordReplayAudit(message, resolverId);
+        } catch (RuntimeException e) {
+            log.error("死信已重放但审计写入失败 messageHash={} resolverId={}",
+                    messageHash(message.getMessageId()), resolverId, e);
         }
     }
 

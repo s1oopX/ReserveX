@@ -15,6 +15,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import javax.sql.DataSource;
 
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class SingleDataSourceConfigTest {
 
@@ -27,6 +28,10 @@ class SingleDataSourceConfigTest {
 
             assertSame(single, factory.getConfiguration().getEnvironment().getDataSource());
             assertSame(single, tx.getDataSource());
+            assertEquals(5, factory.getConfiguration().getDefaultStatementTimeout());
+            var hikari = (HikariDataSource) single;
+            assertEquals(3000, hikari.getDataSourceProperties().get("connectTimeout"));
+            assertEquals(5000, hikari.getDataSourceProperties().get("socketTimeout"));
         }
     }
 

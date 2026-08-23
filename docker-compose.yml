@@ -73,7 +73,7 @@ services:
     environment:
       TZ: Asia/Shanghai
       # NameServer 只保存路由元数据，单节点无需默认 1GiB 堆。
-      JAVA_OPT_EXT: "-Xms256m -Xmx256m -Xmn128m"
+      JAVA_OPT_EXT: "${ROCKETMQ_NAMESRV_HEAP_OPTS:--Xms256m -Xmx256m -Xmn128m}"
 
   rmqbroker:
     image: reservex-rocketmq:5.5.0-secured
@@ -184,7 +184,7 @@ services:
       # prod 必须显式分配唯一 worker，禁止多实例静默共享 0 造成 Snowflake 撞号。
       - WORKER_ID=${WORKER_ID:?WORKER_ID must be set explicitly (0..31)}
       - TZ=Asia/Shanghai
-      - JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError
+      - JAVA_TOOL_OPTIONS=${BACKEND_JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError}
       - MYSQL_APP_PASSWORD=${MYSQL_APP_PASSWORD}
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - ROCKETMQ_APP_SECRET_KEY=${ROCKETMQ_APP_SECRET_KEY}
@@ -215,6 +215,12 @@ services:
     depends_on:
       backend: { condition: service_healthy }
       frontend-build: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     environment:
       TZ: Asia/Shanghai
 

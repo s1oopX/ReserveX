@@ -64,7 +64,7 @@ class ReservationServiceTest {
         HashOperations<String, Object, Object> hashes = mock(HashOperations.class);
         when(redis.opsForZSet()).thenReturn(zset);
         when(redis.opsForHash()).thenReturn(hashes);
-        when(zset.range(ReservationService.PENDING_KEY, 0, 499))
+        when(zset.reverseRange(ReservationService.PENDING_KEY, 0, 499))
                 .thenReturn(Set.of(Long.toString(rno)));
         when(hashes.entries(ReservationService.occupyKey(rno))).thenReturn(Map.of(
                 "user_id", Long.toString(userId), "slot_id", "broken",
@@ -113,7 +113,7 @@ class ReservationServiceTest {
         HashOperations<String, Object, Object> hashes = mock(HashOperations.class);
         when(redis.opsForZSet()).thenReturn(zset);
         when(redis.opsForHash()).thenReturn(hashes);
-        when(zset.range(ReservationService.PENDING_KEY, 0, 499)).thenReturn(Set.of());
+        when(zset.reverseRange(ReservationService.PENDING_KEY, 0, 499)).thenReturn(Set.of());
         when(hashes.entries(ReservationService.occupyKey(rno))).thenReturn(Map.of(
                 "user_id", Long.toString(userId), "cancelled", "1"));
         SlotService slots = mock(SlotService.class);

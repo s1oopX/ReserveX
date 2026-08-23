@@ -63,17 +63,23 @@ public class SingleDataSourceConfig {
         ds.setMinimumIdle(cfg.getPool().getMinimumIdle());
         ds.setConnectionTimeout(cfg.getPool().getConnectionTimeout());
         ds.setMaxLifetime(cfg.getPool().getMaxLifetime());
+        ds.addDataSourceProperty("connectTimeout", cfg.getPool().getJdbcConnectTimeout());
+        ds.addDataSourceProperty("socketTimeout", cfg.getPool().getSocketTimeout());
         return ds;
     }
 
     @Bean
     public SqlSessionFactory singleSqlSessionFactory(
-            @Qualifier("singleDataSource") DataSource singleDataSource) throws Exception {
+            @Qualifier("singleDataSource") DataSource singleDataSource,
+            ReserveXProperties props) throws Exception {
         MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
         factory.setDataSource(singleDataSource);
         factory.setMapperLocations(new PathMatchingResourcePatternResolver()
                 .getResources("classpath*:/mapper/single/*.xml"));
-        return factory.getObject();
+        SqlSessionFactory sessionFactory = factory.getObject();
+        sessionFactory.getConfiguration().setDefaultStatementTimeout(
+                props.getDatasource().get("single").getPool().getStatementTimeoutSec());
+        return sessionFactory;
     }
 
     /**

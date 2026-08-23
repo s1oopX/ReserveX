@@ -4,6 +4,9 @@ import cn.hutool.crypto.digest.DigestUtil;
 import com.reservex.common.BizException;
 import com.reservex.common.ErrorCode;
 import com.reservex.config.ReserveXProperties;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -105,15 +108,18 @@ public class RegistrationCodeService {
     private final String mailFrom;
     private final SecureRandom random = new SecureRandom();
     private final Semaphore sends = new Semaphore(4);
+    private final CircuitBreaker smtpCircuitBreaker;
 
     public RegistrationCodeService(StringRedisTemplate redis,
                                    JavaMailSender mailSender,
                                    ReserveXProperties props,
-                                   @Value("${spring.mail.username}") String mailFrom) {
+                                   @Value("${spring.mail.username}") String mailFrom,
+                                   CircuitBreakerRegistry circuitBreakerRegistry) {
         this.redis = redis;
         this.mailSender = mailSender;
         this.props = props;
         this.mailFrom = mailFrom;
+        this.smtpCircuitBreaker = circuitBreakerRegistry.circuitBreaker("smtp");
     }
 
     public void send(String rawEmail, String clientIp) {
@@ -145,10 +151,13 @@ public class RegistrationCodeService {
             message.setTo(email);
             message.setSubject("ReserveX 注册验证码");
             message.setText("您的注册验证码是 " + code + "，10 分钟内有效。若非本人操作，请忽略本邮件。");
-            mailSender.send(message);
+            smtpCircuitBreaker.executeRunnable(() -> mailSender.send(message));
             delivered = true;
         } catch (BizException e) {
             throw e;
+        } catch (CallNotPermittedException e) {
+            log.warn("SMTP 熔断中,拒绝发送注册验证码");
+            throw BizException.of(ErrorCode.SERVICE_DEGRADED);
         } catch (RuntimeException e) {
             log.error("注册验证码邮件发送失败", e);
             throw BizException.of(ErrorCode.SERVICE_DEGRADED);

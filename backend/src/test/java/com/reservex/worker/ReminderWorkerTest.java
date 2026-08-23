@@ -8,6 +8,7 @@ import com.reservex.entity.User;
 import com.reservex.mapper.sharding.ReservationMapper;
 import com.reservex.mapper.sharding.UserMapper;
 import com.reservex.mapper.single.SlotMapper;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
@@ -66,7 +67,7 @@ class ReminderWorkerTest {
         JavaMailSender mail = mock(JavaMailSender.class);
 
         new ReminderWorker(reservations, users, slots, time,
-                new ReserveXProperties(), redis, mail).scan();
+                new ReserveXProperties(), redis, mail, CircuitBreakerRegistry.ofDefaults()).scan();
 
         var order = inOrder(values, mail);
         order.verify(values).setIfAbsent(key, "sending", Duration.ofMinutes(1));

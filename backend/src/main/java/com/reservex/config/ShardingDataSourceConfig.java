@@ -132,6 +132,8 @@ public class ShardingDataSourceConfig {
         ds.setMinimumIdle(cfg.getPool().getMinimumIdle());
         ds.setConnectionTimeout(cfg.getPool().getConnectionTimeout());
         ds.setMaxLifetime(cfg.getPool().getMaxLifetime());
+        ds.addDataSourceProperty("connectTimeout", cfg.getPool().getJdbcConnectTimeout());
+        ds.addDataSourceProperty("socketTimeout", cfg.getPool().getSocketTimeout());
         return ds;
     }
 
@@ -148,12 +150,16 @@ public class ShardingDataSourceConfig {
      */
     @Bean
     @Primary
-    public SqlSessionFactory shardingSqlSessionFactory(DataSource shardingDataSource) throws Exception {
+    public SqlSessionFactory shardingSqlSessionFactory(DataSource shardingDataSource,
+                                                        ReserveXProperties props) throws Exception {
         MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
         factory.setDataSource(shardingDataSource);
         factory.setMapperLocations(new PathMatchingResourcePatternResolver()
                 .getResources("classpath*:/mapper/sharding/*.xml"));
-        return factory.getObject();
+        SqlSessionFactory sessionFactory = factory.getObject();
+        sessionFactory.getConfiguration().setDefaultStatementTimeout(
+                props.getDatasource().get("ds0").getPool().getStatementTimeoutSec());
+        return sessionFactory;
     }
 
     /**

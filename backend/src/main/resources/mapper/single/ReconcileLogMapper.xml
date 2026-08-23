@@ -56,7 +56,7 @@
             OR EXISTS (
                 SELECT 1 FROM `slot` s
                 WHERE s.`slot_id` = r.`slot_id`
-                  AND s.`slot_date` &gt;= CURRENT_DATE
+                  AND s.`slot_date` &gt;= #{currentDate}
             ))
           AND NOT EXISTS (
               SELECT 1
@@ -82,7 +82,7 @@
             OR EXISTS (
                 SELECT 1 FROM `slot` s
                 WHERE s.`slot_id` = r.`slot_id`
-                  AND s.`slot_date` &gt;= CURRENT_DATE
+                  AND s.`slot_date` &gt;= #{currentDate}
             ))
           AND NOT EXISTS (
               SELECT 1

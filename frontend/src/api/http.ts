@@ -67,6 +67,7 @@ export function clearSession(): void {
 export type Id = string
 
 let refreshPromise: Promise<string | null> | null = null
+const REQUEST_TIMEOUT_MS = 10_000
 
 async function doRefresh(): Promise<string | null> {
   const sourceSession = authSession
@@ -142,24 +143,30 @@ async function request<T>(method: string, path: string, body?: unknown, isRetry 
   const sentAccessToken = getAccessToken()
   if (sentAccessToken) headers['Authorization'] = `Bearer ${sentAccessToken}`
 
-  let resp: Response
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  let resp: Response | undefined
+  let payload: ApiResult<T>
   try {
     resp = await fetch(`/api${path}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
     })
-  } catch {
-    throw new ApiError('NETWORK_ERROR', '网络连接失败,请检查网络', '')
-  }
-
-  if (resp.status === 204) return undefined as T
-
-  let payload: ApiResult<T>
-  try {
+    if (resp.status === 204) return undefined as T
     payload = (await resp.json()) as ApiResult<T>
-  } catch {
-    throw new ApiError('INTERNAL_ERROR', CodeText[Code.INTERNAL_ERROR], '')
+  } catch (error) {
+    if (error instanceof ApiError) throw error
+    if (controller.signal.aborted) {
+      throw new ApiError('REQUEST_TIMEOUT', '请求超时,请稍后重试', '')
+    }
+    if (resp !== undefined) {
+      throw new ApiError('INTERNAL_ERROR', CodeText[Code.INTERNAL_ERROR], '')
+    }
+    throw new ApiError('NETWORK_ERROR', '网络连接失败,请检查网络', '')
+  } finally {
+    window.clearTimeout(timeout)
   }
 
   // 检查 401 / UNAUTHORIZED
