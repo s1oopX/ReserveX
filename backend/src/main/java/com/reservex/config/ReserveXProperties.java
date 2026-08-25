@@ -105,6 +105,14 @@ public class ReserveXProperties {
         private int scanPageSize = 500;
         /** 同一 rno 补投上限;耗尽转 stuck,**不自主 10.2a**(04 §三·补)。 */
         private int reinjectMax = 5;
+        /**
+         * 卡单多久未人工处理算逾期,喂
+         * {@code reservex_stuck_overdue} gauge(08 §6.1)。
+         *
+         * <p>只影响告警口径,不触发任何自动动作 —— 卡单的处置始终是人工的
+         * (04 §三·补:不自主回滚)。调小它只会让告警更早响。
+         */
+        private int stuckAlertAfterMin = 60;
     }
 
     @Data

@@ -193,6 +193,7 @@ reservex:
     scan-cron: "*/10 * * * * ?"
     scan-page-size: 500
     reinject-max: 5              # 同一 rno 补投上限;耗尽转 stuck,**不自主 10.2a**
+    stuck-alert-after-min: 60    # 卡单逾期告警口径(08 §6.1);只喂 gauge,不触发自动处置
 
   reminder:
     ahead-min: 30                # ReminderTrigger 延时到 valid_until - 30min

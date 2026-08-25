@@ -28,6 +28,9 @@ import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 
+import com.reservex.metrics.ReserveXMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.HashMap;
@@ -150,6 +153,11 @@ class ReservationPersistenceConsumerTest {
         order.verify(fixture.rocketMQ).syncSend(eq("compensate-rollback"),
                 any(CompensateRollbackMessage.class));
         order.verify(fixture.consumed).markConsumed(eq(GROUP), eq("rc-22"), any());
+        // 回补是静默动作:没有这个计数器,「补偿偶发」和「补偿刷屏」在外部看不出区别。
+        assertEquals(1d, fixture.registry
+                .get(ReserveXMetrics.COMPENSATE_TRIGGERED)
+                .tag("reason", ReserveXMetrics.REASON_ID_CARD_ROUTE_CONFLICT)
+                .counter().count());
     }
 
     @Test
@@ -276,11 +284,12 @@ class ReservationPersistenceConsumerTest {
         PlatformTransactionManager txManager = mock(PlatformTransactionManager.class);
         when(txManager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
 
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
         ReservationPersistenceConsumer consumer = new ReservationPersistenceConsumer(
                 reservation, outbox, publisher, stateLog, route, event, bucket, consumed, stuck,
-                redis, rocketMQ, time, props, txManager, txManager);
+                redis, rocketMQ, time, props, txManager, txManager, new ReserveXMetrics(registry));
         return new Fixture(consumer, reservation, outbox, publisher, stateLog, route, consumed,
-                stuck, event, bucket, redis, hash, zset, rocketMQ);
+                stuck, event, bucket, redis, hash, zset, rocketMQ, registry);
     }
 
     private static ReservationCreatedMessage message() {
@@ -304,6 +313,7 @@ class ReservationPersistenceConsumerTest {
                            StringRedisTemplate redis,
                            HashOperations<String, Object, Object> hash,
                            ZSetOperations<String, String> zset,
-                           RocketMQTemplate rocketMQ) {
+                           RocketMQTemplate rocketMQ,
+                           SimpleMeterRegistry registry) {
     }
 }

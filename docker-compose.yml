@@ -83,7 +83,8 @@ services:
     stop_grace_period: 60s
     depends_on: [rmqnamesrv]
     command: sh /init/broker-entrypoint.sh
-    expose: ["10909", "10911"]
+    # 5557 是 broker.conf 里 metricsPromExporterPort 的值,给 prometheus 抓。
+    expose: ["10909", "10911", "5557"]
     networks: [data]
     volumes:
       - ./docker/rocketmq/broker-entrypoint.sh:/init/broker-entrypoint.sh:ro
@@ -176,6 +177,11 @@ services:
     #    调试需要时用 docker compose exec 或临时加映射。
     expose: ["8080"]
     networks: [edge, data]
+    volumes:
+      # 结构化日志(ECS JSON)落这里,alloy 以只读方式采走(§6.0 Logging)。
+      # ⚠️ /app/logs 在 backend/Dockerfile 里已建好并 chown 给 app —— 空卷挂在
+      #    镜像中不存在的路径上会是 root:root 755,应用以 app 跑就写不进去。
+      - backend-logs:/app/logs
     # §7.4:必须 > spring.lifecycle.timeout-per-shutdown-phase(30s)。
     #   默认 10s 会在 D6 消费者卡在阶段1↔阶段2(跨库无事务保护)时被 SIGKILL
     stop_grace_period: 45s
@@ -200,6 +206,141 @@ services:
       timeout: 3s
       retries: 20
       start_period: 20s
+
+  # §6.1:抓取 + 告警。补偿链路(回补/补投/死信)成功时一声不响、失败时只留
+  #   一行日志 —— 没有这两个服务,"补偿在正常工作"和"补偿一直在失败"从外部看
+  #   完全一样。规则见 docker/prometheus/rules/reservex.yml。
+  prometheus:
+    image: prom/prometheus:v3.5.5
+    restart: unless-stopped
+    depends_on: [backend]
+    # ⚠️ 无内置鉴权:Prometheus/Alertmanager 都没有登录,谁连上谁就能读全部指标、
+    #    还能通过 /-/reload、静默接口改行为。所以端口只绑 127.0.0.1(同 caddy 的
+    #    做法),生产必须放在带鉴权的反代之后,不可直接暴露。
+    ports: ["127.0.0.1:9090:9090"]
+    # data 是 internal 网,只挂它的话宿主端口发布不生效;edge 用来放行 UI 访问,
+    # data 用来抓 backend / redis-exporter / rmqbroker(它们不在 edge 上)。
+    networks: [edge, data]
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # 单机演示留 15 天足够复盘一次事故;不设则按默认 15d,显式写出来免得误会。
+      - "--storage.tsdb.retention.time=15d"
+    environment:
+      TZ: Asia/Shanghai
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    restart: unless-stopped
+    # ⚠️ 必须能出网发 SMTP。data 是 internal: true(无出口),只挂 data 会让
+    #    告警永远发不出去 —— 而且现象是静默失败。edge 提供出网路径。
+    networks: [edge, data]
+    ports: ["127.0.0.1:9093:9093"]
+    # entrypoint 非空时 Compose 会忽略镜像的 CMD,不会重复传 --config.file。
+    entrypoint: ["/bin/sh", "/init/entrypoint.sh"]
+    volumes:
+      - ./docker/alertmanager/entrypoint.sh:/init/entrypoint.sh:ro
+      - ./docker/alertmanager/alertmanager.tmpl.yml:/etc/alertmanager/alertmanager.tmpl.yml:ro
+      - alertmanager-data:/alertmanager
+    environment:
+      TZ: Asia/Shanghai
+      SMTP_FROM: ${SMTP_FROM}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO}
+    # 口令走 secret 挂到 /run/secrets/smtp_password(只读),不进配置文件、
+    # 不进持久卷、不出现在 docker inspect 的 env 里。
+    secrets: [smtp_password]
+
+  # §7.3:noeviction 下 Redis 到顶后写命令直接返 OOM,而 ping 仍是 PONG、
+  #   healthcheck 仍是绿的 —— used/max 比例是抢号全线降级唯一的前兆信号。
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.89.0-alpine
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+    expose: ["9121"]
+    networks: [data]
+    environment:
+      TZ: Asia/Shanghai
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  # §6.0 Logging:"结构化日志(JSON)+ traceId 串上下文"。
+  #   告警回答"补偿在失败",这三个服务回答"哪一笔、为什么" —— 那要按 requestId
+  #   把 HTTP 侧与消息侧的日志行串起来,docker compose logs 只能全文 grep。
+  loki:
+    image: grafana/loki:3.7.6
+    restart: unless-stopped
+    # ⚠️ 无鉴权(auth_enabled: false),且日志里有手机号后四位、身份证密文这类东西。
+    #    所以不发布宿主端口,只在 internal 的 data 网内,查询一律经 Grafana。
+    expose: ["3100"]
+    networks: [data]
+    volumes:
+      - ./docker/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    # 镜像默认 CMD 指向 /etc/loki/local-config.yaml,换成我们这份(带 compactor
+    # 保留策略 —— 上游默认配置没有,chunk 永不删,盘会一直涨到写满)。
+    command: ["-config.file=/etc/loki/loki.yml"]
+    environment:
+      TZ: Asia/Shanghai
+
+  alloy:
+    image: grafana/alloy:v1.19.0
+    restart: unless-stopped
+    depends_on: [loki]
+    networks: [data]
+    # ⚠️ 镜像默认以 root 跑(Dockerfile 建了 alloy 用户但没 USER 它,注释里写着
+    #    非 root 属实验性)。这里显式降到 473(=镜像里 alloy 用户的 uid):
+    #    读日志不需要 root。/var/lib/alloy 上游已 chown 给它,positions 写得进去;
+    #    日志文件是 644、目录 755,以任何 uid 都读得到。
+    user: "473"
+    volumes:
+      - ./docker/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # 只读挂 backend 的日志卷。⚠️ 故意不挂 /var/run/docker.sock:
+      #    那等于把宿主 root 交给这个容器(socket 上能起特权容器、挂宿主根目录),
+      #    为了收集日志付这个代价不值当。代价是只覆盖 backend,可接受 ——
+      #    要串 requestId 追一笔预约,需要的正是这一份。
+      - backend-logs:/logs:ro
+      - alloy-data:/var/lib/alloy/data
+    command:
+      - "run"
+      - "/etc/alloy/config.alloy"
+      - "--storage.path=/var/lib/alloy/data"
+      # 自身指标要能被抓到(prometheus 的 alloy job),否则采集链路哑了没人知道。
+      - "--server.http.listen-addr=0.0.0.0:12345"
+    environment:
+      TZ: Asia/Shanghai
+
+  grafana:
+    image: grafana/grafana:13.2.0
+    restart: unless-stopped
+    depends_on: [prometheus, loki]
+    # 只绑 127.0.0.1(同 caddy/prometheus 的做法)。Grafana 自带登录,但默认
+    # 口令是 admin/admin,直接暴露公网等于把全部指标和日志摊开。
+    ports: ["127.0.0.1:3000:3000"]
+    # edge 供 UI 访问,data 用来连 prometheus / loki(它们不在 edge 上)。
+    networks: [edge, data]
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      # ⚠️ 面板与 provisioning 做兄弟目录,刻意不放 /var/lib/grafana/dashboards ——
+      #    那样会把只读 bind 嵌套进下面那个可写命名卷内部,拓扑不可读且改卷易误伤。
+      #    详见 docker/grafana/provisioning/dashboards/dashboards.yml 的说明。
+      - ./docker/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      TZ: Asia/Shanghai
+      # ⚠️ 缺这个变量直接拒绝启动。Grafana 自己不会因为没设口令而报错 ——
+      #    它会静默回落到 admin/admin,而"监控台还是默认口令"正是最容易被忘掉的那种洞。
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set (Grafana 管理员口令,勿留 admin)}
+      # 演示环境不需要注册、不需要匿名访问、也不用查版本更新。
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
 
   caddy:
     image: caddy:2.11.4
@@ -229,6 +370,26 @@ volumes:
   redis-data:
   rocketmq-store:
   frontend-dist:
+  prometheus-data:
+  # 告警的抑制/静默/去重状态。不持久化的话每次重启都会把已经发过的告警重发一遍。
+  alertmanager-data:
+  # 日志链路(§6.0)。
+  #   backend-logs:backend 写、alloy 只读。滚动上限由 application-prod.yml 的
+  #     logging.logback.rollingpolicy 定(50MB × 7,总量 ≤500MB),不会无限涨。
+  #   loki-data:索引与 chunk,保留期 14 天(loki.yml 的 compactor + retention_period)。
+  #   alloy-data:读到哪一行的 positions。不持久化的话每次重启都会重读整个文件,
+  #     日志会重复入库,而"日志里同一件事出现两遍"最容易把排障带偏。
+  backend-logs:
+  loki-data:
+  alloy-data:
+  grafana-data:
+
+secrets:
+  # 从环境变量取值(compose-spec 的 secrets.environment,Compose v2.6.0+),
+  # 容器内只读挂在 /run/secrets/smtp_password。复用 backend 已有的
+  # QQ_SMTP_PASSWORD,不新增一份口令。
+  smtp_password:
+    environment: QQ_SMTP_PASSWORD
 
 networks:
   edge:

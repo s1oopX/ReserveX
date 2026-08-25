@@ -1,0 +1,27 @@
+# 面板自动装配。JSON 放在 /etc/grafana/dashboards(由 compose 只读挂载)。
+#
+# ⚠️ 路径刻意不放 /var/lib/grafana/dashboards(上游参考文档里的默认值):
+#    /var/lib/grafana 是 GF_PATHS_DATA,compose 在那儿挂了可写的命名卷
+#    grafana-data。把只读 bind 嵌套进可写卷内部虽然 Docker 允许(深路径后挂、
+#    覆盖浅路径),但"同一棵树里一半可写一半只读"读代码的人根本看不出来,
+#    改卷时也极易把面板目录连带弄没。挪到 /etc/grafana 下与 provisioning
+#    做兄弟目录,两个挂载点互不嵌套,拓扑一眼可辨。
+#    上游文档两种路径都在用(参考配置用 /var/lib/...,目录结构示例用
+#    /etc/dashboards),说明 Grafana 本身不关心放哪儿。
+apiVersion: 1
+
+providers:
+  - name: ReserveX
+    orgId: 1
+    folder: ReserveX
+    type: file
+    # 禁止在 UI 里删:面板是版本控制里的产物,界面删掉会造成"文件还在但看不到"
+    # 这种查不清的状态。
+    disableDeletion: true
+    # UI 上的改动允许(排障时临时改查询很常见),但重启后会被文件覆盖回去。
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards
+      # 让 JSON 里的 folder 结构生效,而不是全平铺在一个目录。
+      foldersFromFilesStructure: false

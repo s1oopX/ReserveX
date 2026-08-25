@@ -8,6 +8,7 @@ import com.reservex.mapper.sharding.UserMapper;
 import com.reservex.mapper.single.StuckReservationMapper;
 import com.reservex.message.ReservationCreatedMessage;
 import com.reservex.lua.LuaScripts;
+import com.reservex.metrics.ReserveXMetrics;
 import com.reservex.service.ReservationService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
@@ -33,6 +34,7 @@ public class PendingScanner {
     private final ReserveXProperties props;
     private final TimeSupport time;
     private final LuaScripts lua;
+    private final ReserveXMetrics metrics;
 
     public PendingScanner(StringRedisTemplate redis,
                           RocketMQTemplate rocketMQ,
@@ -40,7 +42,8 @@ public class PendingScanner {
                           StuckReservationMapper stuckMapper,
                           ReserveXProperties props,
                           TimeSupport time,
-                          LuaScripts lua) {
+                          LuaScripts lua,
+                          ReserveXMetrics metrics) {
         this.redis = redis;
         this.rocketMQ = rocketMQ;
         this.userMapper = userMapper;
@@ -48,6 +51,7 @@ public class PendingScanner {
         this.props = props;
         this.time = time;
         this.lua = lua;
+        this.metrics = metrics;
     }
 
     @Scheduled(cron = "${reservex.pending.scan-cron}")
@@ -88,11 +92,12 @@ public class PendingScanner {
         long userId = longValue(occupy, "user_id");
         User user = userMapper.selectById(userId);
         if (user == null) {
-            toStuck(rno, occupy, null, count, "用户不存在");
+            toStuck(rno, occupy, null, count, "用户不存在", ReserveXMetrics.REASON_USER_MISSING);
             return;
         }
         if (count >= props.getPending().getReinjectMax()) {
-            toStuck(rno, occupy, user, count, "补投达到上限");
+            toStuck(rno, occupy, user, count, "补投达到上限",
+                    ReserveXMetrics.REASON_REINJECT_EXHAUSTED);
             return;
         }
 
@@ -113,14 +118,16 @@ public class PendingScanner {
         }
         try {
             rocketMQ.syncSend("reservation-created", message);
+            metrics.reinjectSent();
             log.warn("补投预约消息 rno={} count={}", rno, attempt);
         } catch (RuntimeException e) {
+            metrics.reinjectFailed();
             log.error("补投预约消息失败 rno={}", rno, e);
         }
     }
 
     private void toStuck(long rno, Map<Object, Object> occupy, User user,
-                         int count, String error) {
+                         int count, String error, String reasonTag) {
         String occupyKey = ReservationService.occupyKey(rno);
         Boolean persisted = redis.persist(occupyKey);
         if (!Boolean.TRUE.equals(persisted) && !Boolean.TRUE.equals(redis.hasKey(occupyKey))) {
@@ -143,6 +150,7 @@ public class PendingScanner {
         stuckMapper.insertIgnore(stuck);
         redis.opsForHash().put(occupyKey, "stuck", "1");
         redis.opsForZSet().remove(ReservationService.PENDING_KEY, Long.toString(rno));
+        metrics.stuckIntake(reasonTag);
         log.error("预约转卡单 rno={} reason={}", rno, error);
     }
 

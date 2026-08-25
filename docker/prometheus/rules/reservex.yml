@@ -1,0 +1,411 @@
+# ReserveX 告警规则(08 §6.1 核心监控指标 / §6.4 容量水位看板)
+#
+# 分三组:
+#   reservex-compensation  补偿链路 —— 架构正确性就押在这几条路上
+#   reservex-capacity      容量水位 —— 降级发生"之前"能看到的信号
+#   reservex-meta          监控自身 —— 规则写错/指标消失时要有人知道
+#
+# ⚠️ 每条业务规则都配了 absent() 兄弟条。原因:PromQL 查一个不存在的指标名
+#    不会报错,只会永远不触发。埋点被删、指标改名、抓取目标配错,表现都是
+#    "告警很安静" —— 与"一切正常"无法区分,正是本轮要消灭的失效模式。
+
+groups:
+  # ==========================================================================
+  # 补偿链路
+  # ==========================================================================
+  - name: reservex-compensation
+    rules:
+      # 08 §6.1 一致性域:"diff > 0 持续告警"
+      - alert: ReconcileDiffNotConverging
+        expr: reservex_reconcile_diff_current > 0
+        for: 10m
+        labels:
+          # domain 与所属 group 保持同一根轴:alertmanager 的抑制规则按 domain 匹配,
+          # 这里若单独写 consistency,就会漏在 domain="compensation" 的匹配之外。
+          severity: critical
+          domain: compensation
+        annotations:
+          summary: "对账差异未收敛({{ $value }} 条)"
+          description: >-
+            reconcile 连续 10 分钟仍报 diff > 0,说明 Redis 与 DB 的库存口径没有
+            自行收敛。对账默认只告警不自动改(stock-auto-fix: false,06 §4.5),
+            所以这条不会自愈,必须人工研判。
+
+      # 死信 = 重试已耗尽,除人工重放外没有别的出路。
+      # 08 §6.1:"死信突增 = 链路异常核心信号"
+      - alert: DeadLetterCaptured
+        expr: increase(reservex_deadletter_captured_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          domain: compensation
+        annotations:
+          summary: "新增死信 {{ $value }} 条(group={{ $labels.source_group }})"
+          description: >-
+            消息重试耗尽后落库。这条用 increase() 看"新增",配套的
+            DeadLetterBacklogStuck 看"存量" —— 两者是不同的事实:
+            没有新增死信 ≠ 表里没有积压。
+
+      # 存量视角:计数器重启归零,gauge 不会。
+      - alert: DeadLetterBacklogStuck
+        expr: reservex_deadletter_pending > 0
+        for: 30m
+        labels:
+          severity: warning
+          domain: compensation
+        annotations:
+          summary: "死信积压 {{ $value }} 条未重放"
+          description: "死信落库超过 30 分钟仍未处理。重放是人工动作,不会自己消失。"
+
+      # 卡单逾期。判据由 reservex.pending.stuck-alert-after-min 决定(默认 60),
+      # 应用侧已把它算进 gauge,这里只看结果 —— 阈值改配置即可,不用改规则。
+      - alert: StuckReservationOverdue
+        expr: reservex_stuck_overdue > 0
+        for: 5m
+        labels:
+          severity: critical
+          domain: compensation
+        annotations:
+          summary: "{{ $value }} 笔卡单超过告警窗口仍未处理"
+          description: >-
+            卡单的处置始终是人工的(04 §三·补:不自主回滚),所以这条只会
+            越拖越多。逾期口径见 stuck-alert-after-min。
+
+      # 补投失败率。分子分母同名不同 outcome,一条表达式即可。
+      - alert: ReinjectFailing
+        expr: |
+          sum(rate(reservex_reinject_total{outcome="failed"}[10m]))
+            /
+          clamp_min(sum(rate(reservex_reinject_total[10m])), 1e-9)
+            > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          domain: compensation
+        annotations:
+          summary: "补投失败率 {{ $value | humanizePercentage }}"
+          description: >-
+            PendingScanner 的补投过半失败。补投上限是 reinject-max(默认 5),
+            耗尽即转卡单,所以持续失败会稳定地把预约推成人工工单。
+
+      # 同步发送失败 = 消息已算持久证据但没进 MQ,只能等补投。
+      - alert: MqSendFailing
+        expr: increase(reservex_mq_send_failed_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          domain: compensation
+        annotations:
+          summary: "MQ 同步发送失败 {{ $value }} 次(topic={{ $labels.topic }})"
+          description: >-
+            抢号已向用户返回成功,occupy 已被 persist 成"必须显式关闭",
+            现在依赖 pending scanner 补投。若同时出现 ReinjectFailing,
+            说明兜底的那条路也在失败。
+
+      # Redis 侧待落库队列。它涨说明消费端跟不上或消费者挂了。
+      - alert: PendingPersistBacklogGrowing
+        expr: reservex_pending_persist_backlog > 500
+        for: 10m
+        labels:
+          severity: warning
+          domain: compensation
+        annotations:
+          summary: "待落库预约积压 {{ $value }} 笔"
+          description: "pending zset 持续高于 500。消费端跟不上,或 persistence 消费者已停。"
+
+      # ⚠️ 这条刻意不设基线阈值,直接 > 0 就报 —— 与 stuck_intake 那类**故意**相反。
+      #    区别在事件性质:stuck_intake 是流量型计数器,不先有业务基线,任何阈值都
+      #    只会误报或永不触发。而库存回补补偿的唯一调用点是身份证路由冲突
+      #    (ReservationPersistenceConsumer:164)—— 两个不同身份证的哈希撞进
+      #    id_card_route 同一主键,设计上几乎不该发生,发生了就有后果:
+      #    库存已回补,但那一笔预约没成。稀有 + 有后果 = 正是 > 0 该报的那类,
+      #    「等业务基线」在这里是站不住的托辞(基线是给高频噪音型计数器用的)。
+      - alert: CompensationTriggered
+        expr: increase(reservex_compensate_triggered_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          domain: compensation
+        annotations:
+          summary: "库存回补补偿被触发 {{ $value }} 次(reason={{ $labels.reason }})"
+          description: >-
+            补偿本身成功了,但意味着有一笔预约没做成,且冲突不会自愈(哈希撞号是确定性的)。
+            下一步在 Loki 里按 requestId 把那一笔捞出来:
+            {service="reservex-backend"} | json | requestId="<从告警时刻的日志行里取>"
+
+  # ==========================================================================
+  # 容量水位:降级"之前"的信号
+  # ==========================================================================
+  - name: reservex-capacity
+    rules:
+      # 08 §7.3 + §6.4:used_memory / maxmemory > 70%。
+      #   noeviction 下到顶 = 写命令返 OOM = 抢号全线降级,而 ping 仍 PONG。
+      #   这是唯一能在到顶之前看到的信号。
+      # ⚠️ maxmemory=0(未限制)时分母为 0,加 > 0 守卫,否则 +Inf 会误报。
+      - alert: RedisMemoryHigh
+        expr: |
+          redis_memory_max_bytes > 0
+            and
+          redis_memory_used_bytes / redis_memory_max_bytes > 0.7
+        for: 5m
+        labels:
+          severity: critical
+          domain: capacity
+          component: redis
+        annotations:
+          summary: "Redis 内存占比 {{ $value | humanizePercentage }}"
+          description: >-
+            库存真理源用的是 noeviction(08 §7.3),到顶后写命令直接返 OOM:
+            抢号降级,连登录写 refresh 也会失败(§389)。健康检查此时仍然是绿的。
+
+      # 08 §6.4:"MQ积压 / 队列最大积压阈值 → 超阈值告警"
+      - alert: MqConsumerLagHigh
+        expr: sum by (consumer_group, topic) (rocketmq_consumer_lag_messages) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          domain: capacity
+          component: rocketmq
+        annotations:
+          summary: "{{ $labels.consumer_group }} 积压 {{ $value }} 条(topic={{ $labels.topic }})"
+          description: "消费跟不上生产。持续积压会把 pending 落库时延推过超时线,进而造出卡单。"
+
+      # 08 §6.4:"DB连接池占用率 → >80%告警"。
+      #   §7.4 定了三个池的大小,这个指标才有分母(§773 的原话:没有池大小 = 没有分母)。
+      # 指标名按 HikariCP 6.3.3(实际解析版本)的 MicrometerMetricsTracker 核对过:
+      #   hikaricp.connections.active / .max,标签是 pool → 除法按 pool 逐个配对。
+      # ⚠️ 覆盖面有限:只有 singleDataSource 是真正的 HikariDataSource
+      #    (SingleDataSourceConfig,poolName=hikari-single),分片侧的池被
+      #    ShardingSphere 包在自己内部,不会出现在 hikaricp_* 里。好在单库池正是
+      #    最忙的那个(落库消费者 20 线程 + 11 类对账 + 全部路由查询)。
+      #    别据此以为分片池也被盯着了。
+      - alert: HikariPoolSaturated
+        expr: |
+          hikaricp_connections_active / clamp_min(hikaricp_connections_max, 1) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          domain: capacity
+        annotations:
+          summary: "Hikari 池 {{ $labels.pool }} 占用 {{ $value | humanizePercentage }}"
+          description: "占满后业务线程会堵在取连接上,表现为整体变慢而非报错。仅覆盖 hikari-single。"
+
+      # §7.4:@Scheduled 活跃数长期 = pool-size 即有任务卡死。
+      #   补偿链路的补投/对账/到期扫描全挂在这个池上,它卡死等于兜底停摆。
+      # ⚠️ 比的是 core 不是 max。ThreadPoolTaskScheduler 底层是
+      #    ScheduledThreadPoolExecutor,它只用核心线程,maximumPoolSize 恒为
+      #    Integer.MAX_VALUE(实测 executor_pool_max_threads = 2147483647)。
+      #    拿 max 当分母的话这条永远不会触发 —— 又是一条"看着装了其实是哑的"规则。
+      #    标签值是 bean 名 taskScheduler(ExecutorConfig),不是 "scheduling"。
+      - alert: ScheduledPoolExhausted
+        expr: |
+          executor_active_threads{name="taskScheduler"}
+            >= executor_pool_core_threads{name="taskScheduler"}
+        for: 15m
+        labels:
+          severity: critical
+          domain: capacity
+        annotations:
+          summary: "@Scheduled 池已满并持续 15 分钟"
+          description: >-
+            活跃数长期等于池大小,说明有任务卡死(§7.4)。PendingScanner /
+            ReconcileService / ExpiryScanner 都在这个池上,卡死即补偿链路整体停摆。
+
+  # ==========================================================================
+  # 监控自身
+  # ==========================================================================
+  - name: reservex-meta
+    rules:
+      # 告警链路上的目标掉线 = 一整片盲区,必须是 critical。
+      # ⚠️ 用 job 白名单而不是 up == 0 全覆盖:日志/面板类目标(loki/alloy/grafana)
+      #    掉线损失的是"事后查得清",告警链路本身还在,不该半夜叫人。
+      #    但白名单有个反面风险:新加的抓取目标若忘了进这个列表,就会掉到下面那条
+      #    warning 里 —— 所以两条规则的正则是互补的(=~ 与 !~ 同一份列表),
+      #    任何目标都必然落进其中一条,不会有目标掉线却完全无人知道。
+      - alert: MonitoringTargetDown
+        expr: up{job=~"backend|redis|rocketmq|prometheus|alertmanager"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          domain: meta
+        annotations:
+          summary: "抓取目标 {{ $labels.job }} 不可达"
+          description: >-
+            抓不到就等于这个目标下的所有告警都失效了。目标掉线本身必须是
+            critical,否则会安静地把一整片盲区当成"没有告警"。
+
+      # 观测链路自己掉线:降一级,但不能不报 —— 否则"日志早就没在收"这件事
+      # 会一直到真要查日志的那天才被发现。
+      - alert: ObservabilityTargetDown
+        expr: up{job!~"backend|redis|rocketmq|prometheus|alertmanager"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          domain: meta
+        annotations:
+          summary: "观测组件 {{ $labels.job }} 不可达"
+          description: >-
+            日志采集/存储/面板中的一个停了。告警仍然会发(那条链路是
+            prometheus + alertmanager),但事后追"哪一笔、为什么"会没有素材。
+
+      # 埋点消失/改名的兜底。指标名写错时 PromQL 不报错,只是永远不触发,
+      # 所以必须有一条专门盯"序列在不在"。
+      - alert: CompensationMetricsMissing
+        expr: |
+          absent(reservex_stuck_pending)
+            or absent(reservex_deadletter_pending)
+            or absent(reservex_reconcile_diff_current)
+            or absent(reservex_pending_persist_backlog)
+        for: 10m
+        labels:
+          severity: critical
+          domain: meta
+        annotations:
+          summary: "补偿链路水位指标消失"
+          description: >-
+            上面这组 gauge 抓不到了。埋点被删、指标改名或 actuator 暴露
+            被收窄都会这样,而后果是相关告警静默失效。
+
+      # ---- 日志链路:"其实早就没在收"是这条链路唯一的失效方式 ----------------
+      #
+      # ⚠️ 这里刻意没有"日志量掉到 0 就告警"那条规则。看着最直观,但对本项目是错的:
+      #    backend 所有 log 都是有条件的(对账无差异、无卡单时一行不打),夜间空转
+      #    十几个小时不写日志是正常状态。按"量为 0"报警等于每晚误报一次,
+      #    而每晚误报的告警三天后就会被所有人无视 —— 那比没有告警更糟。
+      #
+      #    所以改看采集端的"在不在盯着文件",它与业务日志量无关,空转时依然准确。
+      - alert: LogPipelineNotTailing
+        expr: loki_source_file_files_active_total == 0
+        for: 15m
+        labels:
+          severity: warning
+          domain: meta
+        annotations:
+          summary: "alloy 没有在采集任何日志文件"
+          description: >-
+            活跃 tailer 数为 0:采集路径没匹配上(config.alloy 的 __path__)、
+            backend-logs 卷没挂上、或结构化日志压根没落盘。现象是 Grafana 里
+            查不到最近的行,而这通常在出事之后才被发现 —— 正好是最需要日志的时刻。
+
+      # 采集端与 Loki 端各有一处"静默丢弃",两边都要盯:
+      #   dropped  = alloy 重试到底仍未送达(客户端侧真丢)
+      #   discarded = Loki 主动拒收(行超长/超龄/限流,reason 标签会说明白)
+      # ⚠️ 这两个计数器在"从未发生过"时序列压根不存在,所以不能给它们配 absent()
+      #    兜底(alloy 只在首次写入某 tenant 时才初始化,空转系统上必然缺失)。
+      #    它们的"埋点没了"由上面那条 LogPipelineNotTailing 与 ObservabilityTargetDown 覆盖。
+      - alert: LogEntriesDropped
+        expr: sum by (reason) (increase(loki_write_dropped_entries_total[10m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          domain: meta
+        annotations:
+          summary: "日志行被丢弃(reason={{ $labels.reason }})"
+          description: >-
+            alloy 重试用尽仍未送达 Loki,这些行永久丢了。丢的可能正是要查的那几分钟。
+
+      - alert: LogEntriesRejectedByLoki
+        expr: sum by (reason) (increase(loki_discarded_samples_total[10m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          domain: meta
+        annotations:
+          summary: "Loki 拒收日志行(reason={{ $labels.reason }})"
+          description: >-
+            line_too_long 说明 max_line_size 512KB 仍不够(深异常栈),
+            greater_than_max_sample_age 说明积压补读超出了 reject_old_samples_max_age,
+            rate_limited 说明瞬时写入超过 ingestion_rate。三种都是静默丢行。
+
+      # ⚠️ 这条盯的是磁盘,不只是日志:retention 停了 chunk 就永远不删,盘会一直
+      #    涨到写满 —— 而盘写满会把 MySQL/Redis 一起带走,故障范围远大于"日志没了"。
+      #    loki.yml 里 retention_enabled 是开着的,但"开了"和"真在跑"是两件事:
+      #    compactor 靠 ring 选主,选主没成功时它一声不响地什么也不做。
+      #
+      # ⚠️ 必须用 apply_retention 这个时间戳,不能用 compact_tables 那个:
+      #    两者由 runCompaction(applyRetention=true/false) 分别更新,压缩在跑
+      #    不代表保留在跑(upstream tables_manager.go)。
+      #    指标值在从未成功跑过时是 0,time()-0 是个巨大值 —— 所以这一条同时
+      #    覆盖了"跑过但卡住"和"启动至今从未跑成功"两种情况。
+      #    保留周期实际每 10m 跑一轮(apply_retention_interval 默认 0 = 跟随
+      #    compaction_interval),6h 阈值 + for 1h 给足了启动与抖动的余量。
+      - alert: LokiRetentionStalled
+        expr: time() - loki_compactor_apply_retention_last_successful_run_timestamp_seconds > 6 * 3600
+        for: 1h
+        labels:
+          severity: warning
+          domain: meta
+        annotations:
+          summary: "Loki 保留策略已停止执行"
+          description: >-
+            超过 6 小时没有一次成功的 retention。日志盘会持续增长,
+            最终写满宿主盘并连带影响 MySQL/Redis。先看 loki 容器日志里的 compactor 段。
+
+      # 日志链路的埋点兜底。这两个指标都是组件构造时就注册的 Gauge(alloy 的
+      # filesActive、Loki 的 promauto 计量),健康系统上必然存在且为 0 或时间戳 ——
+      # 所以 absent() 在这两个上是可靠的,能兜住"指标改名"与"组件加载失败"。
+      - alert: LogPipelineMetricsMissing
+        expr: |
+          absent(loki_source_file_files_active_total)
+            or absent(loki_compactor_apply_retention_last_successful_run_timestamp_seconds)
+        for: 15m
+        labels:
+          severity: warning
+          domain: meta
+        annotations:
+          summary: "日志链路指标消失"
+          description: >-
+            上面几条日志告警都依赖它们。序列没了,那些规则就是哑的 ——
+            而"日志没在收"本身就是安静的,双重静默等于完全失明。
+
+      - alert: RedisMetricsMissing
+        expr: absent(redis_memory_used_bytes)
+        for: 10m
+        labels:
+          severity: warning
+          domain: meta
+        annotations:
+          summary: "Redis 内存指标消失"
+          description: "RedisMemoryHigh 依赖它。它没了,那条唯一的降级前兆告警就是哑的。"
+
+      # 调度池指标依赖 bean 名标签,改名就会静默失效 —— 同样兜一条。
+      - alert: SchedulerMetricsMissing
+        expr: absent(executor_pool_core_threads{name="taskScheduler"})
+        for: 10m
+        labels:
+          severity: warning
+          domain: meta
+        annotations:
+          summary: "调度池指标消失"
+          description: >-
+            ScheduledPoolExhausted 依赖 name="taskScheduler" 这个标签值
+            (来自 ExecutorConfig 的 bean 名)。bean 改名后规则会安静失效。
+
+      - alert: RocketMqMetricsMissing
+        expr: absent(rocketmq_consumer_lag_messages)
+        for: 15m
+        labels:
+          severity: warning
+          domain: meta
+        annotations:
+          summary: "RocketMQ 积压指标消失"
+          description: >-
+            broker 的 metricsExporterType 需为 PROM(broker.conf)。该配置失效时
+            端口在但没有这个序列,MqConsumerLagHigh 会安静地永不触发。
+
+      # Hikari 指标由 Spring Boot 的 DataSourcePoolMetricsAutoConfiguration 自动挂,
+      # 但本项目的 DataSource 是手写 @Bean、且分片侧被 ShardingSphere 包着 ——
+      # 这层自动装配到底生效没有,离线核不动(要起真容器才能看到)。
+      # 所以不赌:真没生效时由这条告警说出来,而不是让 HikariPoolSaturated 装哑巴。
+      - alert: HikariMetricsMissing
+        expr: absent(hikaricp_connections_active)
+        for: 15m
+        labels:
+          severity: warning
+          domain: meta
+        annotations:
+          summary: "Hikari 连接池指标消失"
+          description: >-
+            HikariPoolSaturated 依赖它。singleDataSource 以 DataSource 类型声明、
+            实例是 HikariDataSource,靠 Boot 的后置处理器装上 Micrometer tracker;
+            这条能兜住"自动装配没生效"和"指标改名"两种情况。

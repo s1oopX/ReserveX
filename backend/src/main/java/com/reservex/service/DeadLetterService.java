@@ -8,6 +8,7 @@ import com.reservex.entity.AuditLog;
 import com.reservex.id.IdGenerator;
 import com.reservex.mapper.single.AuditLogMapper;
 import com.reservex.mapper.single.DeadLetterMessageMapper;
+import com.reservex.metrics.ReserveXMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
@@ -40,31 +41,34 @@ public class DeadLetterService {
     private final RocketMQTemplate rocketMQ;
     private final TimeSupport time;
     private final TransactionTemplate singleTx;
+    private final ReserveXMetrics metrics;
 
     @Autowired
     public DeadLetterService(DeadLetterMessageMapper mapper, AuditLogMapper auditLogMapper,
                              IdGenerator idGenerator, RocketMQTemplate rocketMQ,
                              TimeSupport time,
-                             @Qualifier("singleTxManager") PlatformTransactionManager singleTxManager) {
+                             @Qualifier("singleTxManager") PlatformTransactionManager singleTxManager,
+                             ReserveXMetrics metrics) {
         this.mapper = mapper;
         this.auditLogMapper = auditLogMapper;
         this.idGenerator = idGenerator;
         this.rocketMQ = rocketMQ;
         this.time = time;
         this.singleTx = singleTxManager == null ? null : new TransactionTemplate(singleTxManager);
+        this.metrics = metrics;
     }
 
     /** Test-only compatibility constructor; production uses the qualified single-db transaction manager. */
     public DeadLetterService(DeadLetterMessageMapper mapper, AuditLogMapper auditLogMapper,
                              IdGenerator idGenerator, RocketMQTemplate rocketMQ,
                              TimeSupport time) {
-        this(mapper, auditLogMapper, idGenerator, rocketMQ, time, null);
+        this(mapper, auditLogMapper, idGenerator, rocketMQ, time, null, ReserveXMetrics.noop());
     }
 
     /** Legacy test constructor kept to avoid coupling unit tests to Spring transaction wiring. */
     public DeadLetterService(DeadLetterMessageMapper mapper, RocketMQTemplate rocketMQ,
                              TimeSupport time) {
-        this(mapper, null, null, rocketMQ, time, null);
+        this(mapper, null, null, rocketMQ, time, null, ReserveXMetrics.noop());
     }
 
     public void capture(String sourceGroup, MessageExt raw) {
@@ -80,7 +84,14 @@ public class DeadLetterService {
         message.setReconsumeTimes(raw.getReconsumeTimes());
         message.setStatus(0);
         message.setCapturedAt(time.now());
-        mapper.insertIgnore(message);
+        if (mapper.insertIgnore(message) == 0) {
+            // IGNORE 命中:同一条消息被死信监听重复投递,不是新故障,不重复计数也不重复告警。
+            return;
+        }
+        metrics.deadLetterCaptured(sourceGroup);
+        // 死信=重试已耗尽,这条消息除人工重放外没有别的出路,必须留下可检索的痕迹。
+        log.error("死信落库 group={} topic={} messageId={} reconsumeTimes={}",
+                sourceGroup, target, message.getMessageId(), message.getReconsumeTimes());
     }
 
     public List<View> list() {

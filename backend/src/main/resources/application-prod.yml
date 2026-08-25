@@ -27,3 +27,28 @@ reservex:
 logging:
   level:
     com.reservex: INFO
+
+  # ---- 结构化日志(08 §6.0 Logging:"结构化日志(JSON)+ traceId 串上下文")----
+  #
+  # 为什么落文件而不是只打 stdout:告警只说"补偿在失败",接下来要回答的是
+  # "哪一笔、为什么"。那要按 requestId 把 HTTP 与消息两侧的行串起来 ——
+  # docker compose logs 只能全文 grep,串不起链路。文件由 alloy 采集进 Loki。
+  #
+  # ⚠️ console 故意保持人读格式(不设 structured.format.console):
+  #    docker compose logs 是排障第一现场,把它变成 JSON 会让最常用的入口变难读。
+  #    机器读的那份走 file,两边各自最优。
+  file:
+    # /app/logs 在镜像里已建好并 chown 给 app(见 backend/Dockerfile)。
+    # compose 把命名卷挂在这个路径上,靠 Docker 的 copy-up 继承该目录的属主 ——
+    # 卷若挂在镜像中不存在的路径上会是 root:root 755,应用以 app 跑就写不进去。
+    name: /app/logs/reservex.json
+  structured:
+    format:
+      file: ecs
+  logback:
+    rollingpolicy:
+      # ⚠️ 这三个值是磁盘写满的唯一闸门。日志把盘写满 → MySQL/Redis 一起挂,
+      #    故障范围远大于"少了几天日志"。宁可少留几天。
+      max-file-size: 50MB
+      max-history: 7
+      total-size-cap: 500MB

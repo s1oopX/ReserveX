@@ -1,0 +1,70 @@
+// ReserveX 日志采集(08 §6.0 Logging)
+//
+// 采的是 backend 写在命名卷里的 ECS JSON(application-prod.yml 的
+// logging.structured.format.file: ecs),不是 docker 容器日志。
+//
+// ⚠️ 为什么不用 docker socket 发现容器日志(那是更常见的写法):
+//    挂 /var/run/docker.sock 等于把宿主 root 交给这个容器 —— socket 上能创建
+//    特权容器、挂宿主根目录。为了看日志付这个代价不值当。读一个只读卷做不到这些。
+//    代价是只覆盖 backend;其余容器仍用 docker compose logs 看。可接受:
+//    要串 requestId 追一笔预约,需要的正是 backend 这一份。
+
+// ---- 采集:tail backend 的 ECS JSON ----------------------------------------
+loki.source.file "backend" {
+  targets = [{
+    __path__ = "/logs/reservex.json",
+    // 这些标签进 Loki 的流标签,必须是低基数的。requestId / rno 一类绝不能放这里
+    // (每笔预约一个值 = 流数量爆炸),它们留在 JSON 里用 | json 在查询时取。
+    service  = "reservex-backend",
+    env      = "compose",
+  }]
+
+  // 内置发现,官方建议优先于独立的 local.file_match 组件。
+  // 需要它是因为 logback 滚动时会换文件:reservex.json 被改名后重新出现,
+  // 固定路径的 tailer 会一直盯着已改名的 inode,新文件的日志就此静默丢失。
+  file_match {
+    enabled     = true
+    sync_period = "10s"
+  }
+
+  forward_to = [loki.process.backend.receiver]
+}
+
+// ---- 加工:取出时间戳与级别 ------------------------------------------------
+loki.process "backend" {
+  forward_to = [loki.write.default.receiver]
+
+  // 只抽要当标签/时间戳用的两个字段。其余字段不抽:整行 JSON 原样进 Loki,
+  // 查询时 | json 就能取到 requestId、error.stack_trace 等全部内容。
+  stage.json {
+    expressions = {
+      // @ 在 JMESPath 里有特殊含义(当前节点),字段名必须加引号转义。
+      timestamp = "\"@timestamp\"",
+      level     = "log.level",
+    }
+  }
+
+  // 用日志自己的时间,而不是 alloy 读到行的时间。差别在重启后补读积压时才显现,
+  // 而那恰恰是最需要对齐时间轴的时刻 —— 排障要拿日志和告警触发时刻对照。
+  stage.timestamp {
+    source = "timestamp"
+    format = "RFC3339Nano"
+    // 解析失败时保持上游时间戳,而不是 fudge 出一个相邻值:
+    // 宁可时间轴上差几毫秒,也不要让一行日志带着编出来的时间进库。
+    action_on_failure = "skip"
+  }
+
+  // level 是低基数的(ERROR/WARN/INFO/DEBUG/TRACE),适合当标签 ——
+  // Grafana 里按级别筛是最高频的动作。
+  stage.labels {
+    values = { level = "level" }
+  }
+}
+
+// ---- 发送 ------------------------------------------------------------------
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+  // 外部标签留空:service/env 已在 source 上给过,重复给会覆盖。
+}

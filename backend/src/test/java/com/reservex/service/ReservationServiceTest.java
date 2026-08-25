@@ -17,6 +17,7 @@ import com.reservex.mapper.sharding.ReservationTransitionOutboxMapper;
 import com.reservex.mapper.single.StateLogMapper;
 import com.reservex.mapper.single.StuckReservationMapper;
 import com.reservex.message.ReservationCreatedMessage;
+import com.reservex.metrics.ReserveXMetrics;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.HashOperations;
@@ -78,7 +79,7 @@ class ReservationServiceTest {
                 redis, mock(RocketMQTemplate.class), mock(StpLogic.class), mock(SlotService.class),
                 reservations, mock(ReservationTransitionOutboxMapper.class),
                 mock(ReservationTransitionOutboxService.class), mock(StateLogMapper.class),
-                mock(CaptchaService.class), stuckRows, tx);
+                mock(CaptchaService.class), stuckRows, tx, ReserveXMetrics.noop());
 
         assertEquals(List.of(), service.mine(userId));
         BizException error = assertThrows(BizException.class, () -> service.detail(userId, rno));
@@ -127,7 +128,7 @@ class ReservationServiceTest {
                 mock(LuaScripts.class), redis, mock(RocketMQTemplate.class), mock(StpLogic.class),
                 slots, reservations, mock(ReservationTransitionOutboxMapper.class),
                 mock(ReservationTransitionOutboxService.class), mock(StateLogMapper.class),
-                mock(CaptchaService.class), stuckRows, tx);
+                mock(CaptchaService.class), stuckRows, tx, ReserveXMetrics.noop());
 
         assertEquals("REVIEW_REQUIRED", service.mine(userId).getFirst().status());
         assertEquals("REVIEW_REQUIRED", service.detail(userId, rno).status());
@@ -156,7 +157,7 @@ class ReservationServiceTest {
                 mock(SlotService.class), reservations,
                 mock(ReservationTransitionOutboxMapper.class),
                 mock(ReservationTransitionOutboxService.class), mock(StateLogMapper.class),
-                mock(CaptchaService.class), stuckRows, tx);
+                mock(CaptchaService.class), stuckRows, tx, ReserveXMetrics.noop());
 
         BizException error = assertThrows(BizException.class,
                 () -> service.cancel(userId, rno, anyVersion()));
@@ -263,7 +264,7 @@ class ReservationServiceTest {
                 mock(IdGenerator.class), time, new ReserveXProperties(), lua,
                 redis, mock(RocketMQTemplate.class), mock(StpLogic.class), mock(SlotService.class),
                 reservations, outbox, publisher, stateLogs, mock(CaptchaService.class),
-                mock(StuckReservationMapper.class), tx);
+                mock(StuckReservationMapper.class), tx, ReserveXMetrics.noop());
 
         assertDoesNotThrow(() -> service.cancel(userId, rno, anyVersion()));
 
@@ -307,7 +308,7 @@ class ReservationServiceTest {
                 mock(StringRedisTemplate.class), mock(RocketMQTemplate.class),
                 mock(StpLogic.class), mock(SlotService.class), reservations, outbox, publisher,
                 mock(StateLogMapper.class), mock(CaptchaService.class),
-                mock(StuckReservationMapper.class), tx);
+                mock(StuckReservationMapper.class), tx, ReserveXMetrics.noop());
 
         assertDoesNotThrow(() -> service.cancel(userId, rno, anyVersion()));
 
@@ -351,7 +352,8 @@ class ReservationServiceTest {
                 mock(StpLogic.class), mock(SlotService.class), reservations,
                 mock(ReservationTransitionOutboxMapper.class),
                 mock(ReservationTransitionOutboxService.class), mock(StateLogMapper.class),
-                mock(CaptchaService.class), mock(StuckReservationMapper.class), tx);
+                mock(CaptchaService.class), mock(StuckReservationMapper.class), tx,
+                ReserveXMetrics.noop());
 
         assertDoesNotThrow(() -> service.cancel(userId, rno, anyVersion()));
     }
@@ -413,7 +415,7 @@ class ReservationServiceTest {
                 stpLogic, mock(SlotService.class), reservations,
                 mock(ReservationTransitionOutboxMapper.class),
                 mock(ReservationTransitionOutboxService.class), mock(StateLogMapper.class),
-                captcha, mock(StuckReservationMapper.class), tx);
+                captcha, mock(StuckReservationMapper.class), tx, ReserveXMetrics.noop());
     }
 
     private static HttpPreconditions.VersionCondition anyVersion() {

@@ -13,6 +13,13 @@ ENV TZ=Asia/Shanghai
 
 # 不用 root 跑应用
 RUN addgroup -S app && adduser -S -G app app
+
+# ⚠️ 这个目录必须在镜像里就建好并归 app,不能等挂卷时自动创建:
+#    空命名卷挂在镜像中不存在的路径上时是 root:root 755,应用以 app 跑写不进去,
+#    结构化日志(application-prod.yml 的 logging.file.name)会直接失败。
+#    路径在镜像里存在时,Docker 会把该目录的属主与权限 copy-up 到新卷上。
+RUN mkdir -p /app/logs && chown app:app /app/logs
+
 COPY --from=build --chown=app:app /build/target/reservex-backend.jar app.jar
 USER app
 

@@ -18,6 +18,7 @@ import com.reservex.mapper.single.StateLogMapper;
 import com.reservex.mapper.single.StuckReservationMapper;
 import com.reservex.message.CompensateRollbackMessage;
 import com.reservex.message.ReservationCreatedMessage;
+import com.reservex.metrics.ReserveXMetrics;
 import com.reservex.service.ReservationService;
 import com.reservex.service.ReservationTransitionOutboxService;
 import com.reservex.service.RollbackService;
@@ -61,6 +62,7 @@ public class ReservationPersistenceConsumer implements RocketMQListener<Reservat
     private final String consumerGroup;
     private final TransactionTemplate singleTx;
     private final TransactionTemplate shardingTx;
+    private final ReserveXMetrics metrics;
 
     public ReservationPersistenceConsumer(ReservationMapper reservationMapper,
                                           ReservationTransitionOutboxMapper outboxMapper,
@@ -76,7 +78,8 @@ public class ReservationPersistenceConsumer implements RocketMQListener<Reservat
                                           TimeSupport time,
                                           ReserveXProperties props,
                                           @Qualifier("singleTxManager") PlatformTransactionManager singleTxManager,
-                                          @Qualifier("shardingTxManager") PlatformTransactionManager shardingTxManager) {
+                                          @Qualifier("shardingTxManager") PlatformTransactionManager shardingTxManager,
+                                          ReserveXMetrics metrics) {
         this.reservationMapper = reservationMapper;
         this.outboxMapper = outboxMapper;
         this.transitionOutbox = transitionOutbox;
@@ -92,6 +95,7 @@ public class ReservationPersistenceConsumer implements RocketMQListener<Reservat
         this.consumerGroup = props.getConsumer().getGroups().get("persistence");
         this.singleTx = new TransactionTemplate(singleTxManager);
         this.shardingTx = new TransactionTemplate(shardingTxManager);
+        this.metrics = metrics;
     }
 
     @Override
@@ -157,6 +161,7 @@ public class ReservationPersistenceConsumer implements RocketMQListener<Reservat
             // consumed 重投只能在补偿完成后清 occupy；补偿 Lua 是该标记的唯一删除者。
             redis.opsForHash().put(occupyKey, "rollback_pending", "1");
             rocketMQ.syncSend("compensate-rollback", rollback);
+            metrics.compensateTriggered(ReserveXMetrics.REASON_ID_CARD_ROUTE_CONFLICT);
             singleTx.executeWithoutResult(status -> {
                 stateLogMapper.insertOrCancel(xid, Long.toString(message.reservationNo()));
                 consumedMapper.markConsumed(consumerGroup, message.eventId(), time.now());

@@ -1,0 +1,70 @@
+# Loki 单机配置(08 §6.0 Logging)
+#
+# 为什么要它:指标告警只说"补偿在失败",下一句话是"哪一笔、为什么"。
+# 那需要按 requestId 把 HTTP 侧与消息侧的日志行串起来 —— docker compose logs
+# 只能全文 grep,串不起链路,也留不住上一次重启前的现场。
+#
+# ⚠️ 单进程、无鉴权、本地盘。这是 compose 单机形态的取舍,不是生产集群配置:
+#    auth_enabled: false 意味着谁连上 3100 谁就能读全部日志(日志里有身份证号
+#    的密文与手机号后四位这类东西)。所以它只在 internal 的 data 网内,
+#    宿主端口一律不发布,查询只经 Grafana。
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  # 默认 debug 会让 Loki 自己的日志淹掉排障视野(它每次 compaction 都刷一屏)。
+  log_level: info
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        # ⚠️ 必须是 24h:retention 只在 index period 为 24h 时生效
+        #    (upstream retention.md 原话)。改成别的值会让下面的保留期静默失效。
+        period: 24h
+
+limits_config:
+  # 保留期。最小 24h(upstream 限制)。14 天足够覆盖"上个月那笔卡单"之外的
+  # 绝大多数追溯,再长就该考虑盘容量了。
+  retention_period: 336h
+  # 一条日志行的上限。ECS 里带 error.stack_trace,深栈会超默认 256KB 被整条丢掉 ——
+  # 而异常栈正是最需要留下的那部分。
+  max_line_size: 512KB
+  # 拒绝过旧样本:保持 upstream 默认的 1w,不收窄。
+  # ⚠️ 这个值收窄是有害的,方向容易搞反:alloy 的 positions 会在重启后从断点续读,
+  #    若 alloy/Loki 停了两三天,补读上来的行全都"超龄"。窗口越窄,这些行越会被
+  #    静默拒收 —— 而故障期间那几天的日志正是最该留下的。宽一点只是多收旧行。
+  reject_old_samples: true
+  reject_old_samples_max_age: 1w
+
+# ⚠️ 没有 compactor 段,retention_period 只是一句空话 —— 索引会被压缩但 chunk
+#    永远不删,盘会一直涨到写满。retention_enabled 与 delete_request_store
+#    两个都必须给(upstream:后者在开启保留时是必填)。
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 150
+  delete_request_store: filesystem
+
+# 不向 grafana.com 上报使用统计:这是内网部署,出网行为越少越好。
+analytics:
+  reporting_enabled: false

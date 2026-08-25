@@ -1,0 +1,84 @@
+# ReserveX 抓取配置(08 §6.0/§6.1)
+#
+# 为什么需要它:补偿链路的正确性靠"回补/补投/死信"这几条路兜底,而它们
+# 成功时一声不响、失败时只留一行日志 —— 没有抓取端,"补偿在正常工作"和
+# "补偿一直在失败"从外部看完全一样。规则见 rules/reservex.yml。
+#
+# 拓扑(08 §五 红线 #35):backend 的 /actuator/* 被 Caddy 挡在外面,
+# 所以在容器网内直连 backend:8080 抓,不经 Caddy(08 §408 行已钉死此路径)。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  # 每条时间序列都会带上,告警邮件里能一眼看出是哪套环境发的。
+  # ⚠️ 写死不用 ${VAR}:Prometheus 默认不展开配置里的环境变量(只有
+  #    --enable-feature=expand-external-labels 才对 external_labels 生效),
+  #    没开这个 flag 时 ${X} 会原样变成标签值,而且不报错。
+  external_labels:
+    env: compose
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # ---- 应用侧:补偿链路埋点 + JVM/HTTP/Hikari ------------------------------
+  - job_name: backend
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["backend:8080"]
+    # ⚠️ 水位类 gauge 在应用内有 30s TTL 缓存(ReserveXHealthGauges):
+    #    15s 抓一次意味着约一半的点是缓存值。这是故意的 —— 那几个 count
+    #    查询要扫 reconcile_log,让抓取直接打库等于自造固定负载。
+    #    告警的 for 都 ≥2m,缓存这点滞后不影响判定。
+
+  # ---- Redis:内存占比是"抢号全线降级"唯一的前兆信号(08 §7.3/§6.4)-----
+  #   maxmemory-policy 是 noeviction,到顶后写命令直接返 OOM,而此时
+  #   redis-cli ping 依然 PONG、healthcheck 依然绿(08 §304 行的原话:
+  #   restart 不是高可用,它不管"进程活着但不健康")。
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  # ---- RocketMQ broker:消费积压(08 §6.4「MQ积压超阈值告警」)-----------
+  #   5.5.0 自带 OTel/Prometheus 导出,端口由 broker.conf 的
+  #   metricsPromExporterPort 决定,不需要额外 exporter 进程。
+  - job_name: rocketmq
+    static_configs:
+      - targets: ["rmqbroker:5557"]
+
+  # ---- 自监控:抓取端/发信端自己哑了也得有人知道 --------------------------
+  #   规则再对,Alertmanager 挂了也一封信都发不出去,外部表现同样是"很安静"。
+  #   这两个 job 让 up == 0 规则(reservex-meta 组)能覆盖到监控链路本身。
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+
+  # ---- 日志链路(§6.0):采集停了也必须有人知道 ---------------------------
+  #   日志的失效方式同样是"很安静":alloy 挂了、Loki 满了、positions 卡住,
+  #   现象都是 Grafana 里查不到最近的行 —— 而这通常在出事之后才被发现,
+  #   正好是最需要日志的时刻。规则见 reservex-meta 组。
+  #
+  # ⚠️ 这三个目标掉线是 warning 不是 critical(规则里按 job 分了级):
+  #    日志与面板断了损失的是"事后查得清",告警链路本身仍然完好;
+  #    与 backend/prometheus/alertmanager 掉线不是一个量级,不该半夜叫人。
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+
+  - job_name: alloy
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["alloy:12345"]
+
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]

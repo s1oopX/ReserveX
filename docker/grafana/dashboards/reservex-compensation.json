@@ -1,0 +1,770 @@
+{
+  "uid": "reservex-compensation",
+  "title": "ReserveX 补偿链路",
+  "description": "补偿链路(回补/补投/死信/卡单)的存量与增量,加降级前兆水位。告警回答'出事了',这里回答'哪一笔、为什么'。指标定义见 ReserveXMetrics / ReserveXHealthGauges,告警规则见 docker/prometheus/rules/reservex.yml。",
+  "tags": [
+    "reservex",
+    "compensation"
+  ],
+  "timezone": "Asia/Shanghai",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "level",
+        "label": "日志级别",
+        "type": "custom",
+        "query": "ERROR,WARN,INFO",
+        "current": {
+          "text": "ERROR",
+          "value": "ERROR"
+        },
+        "options": [],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "存量:现在积压着多少(重启不归零)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "对账差异未收敛",
+      "description": "reservex_reconcile_diff_current。stock-auto-fix 为 false(06 §4.5),对账只报不改,所以这个数不会自愈 —— 非 0 就意味着有人得去看。告警:ReconcileDiffNotConverging(>0 持续 10m,critical)。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "reservex-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "reservex_reconcile_diff_current",
+          "legendFormat": "diff",
+          "instant": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "noValue": "无数据(埋点或抓取有问题,见 CompensationMetricsMissing)"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "死信待重放",
+      "description": "reservex_deadletter_pending。重试已耗尽落库的消息,重放是人工动作,不会自己消失。告警:DeadLetterBacklogStuck(>0 持续 30m,warning)。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "reservex-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "reservex_deadletter_pending",
+          "legendFormat": "待重放",
+          "instant": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 20
+              }
+            ]
+          },
+          "noValue": "无数据"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "卡单逾期未处理",
+      "description": "reservex_stuck_overdue。逾期口径由 reservex.pending.stuck-alert-after-min(默认 60 分钟)决定,应用侧已算进 gauge。卡单处置始终是人工的(04 §三·补:不自主回滚),所以这个数只会越拖越多。告警:StuckReservationOverdue(>0 持续 5m,critical)。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "reservex-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "reservex_stuck_overdue",
+          "legendFormat": "逾期",
+          "instant": false
+        },
+        {
+          "refId": "B",
+          "expr": "reservex_stuck_pending",
+          "legendFormat": "待研判(全部)",
+          "instant": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "noValue": "无数据"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "待研判(全部)"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "待落库积压(Redis 侧)",
+      "description": "reservex_pending_persist_backlog。pending zset 里等落库的预约数。它涨说明消费端跟不上或 persistence 消费者已停;持续积压会把落库时延推过超时线,进而造出卡单。告警:PendingPersistBacklogGrowing(>500 持续 10m,warning)。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "reservex-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "reservex_pending_persist_backlog",
+          "legendFormat": "待落库",
+          "instant": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 200
+              },
+              {
+                "color": "red",
+                "value": 500
+              }
+            ]
+          },
+          "noValue": "无数据"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "增量:补偿在动还是在失败",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "补投:成功 vs 失败",
+      "description": "reservex_reinject_total{outcome}。补投上限是 reinject-max(默认 5),耗尽即转卡单 —— 所以持续失败会稳定地把预约推成人工工单。告警:ReinjectFailing(失败率 >50% 持续 10m,warning)。\n\n⚠️ 两条线都贴地不代表健康,也可能是根本没有待补投的消息。判断'补偿是否有效'要看失败线相对成功线的比例,而不是失败线的绝对值。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "reservex-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (rate(reservex_reinject_total[$__rate_interval]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": []
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sent"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "死信落库 / MQ 发送失败 / 转卡单",
+      "description": "三条失败路径的增量视角。\n\n· reservex_deadletter_captured_total:重试耗尽落库,除人工重放外没有出路(告警 DeadLetterCaptured,新增即 critical)\n· reservex_mq_send_failed_total:抢号已向用户返回成功、occupy 已 persist,但消息没进 MQ —— 只能等补投兜(告警 MqSendFailing)\n· reservex_stuck_intake_total:预约转卡单,人工介入前的终点(按 reason 分)\n\n⚠️ stuck_intake 没有配告警规则:任何阈值都得先有业务基线,现在没有,编一个出来只会误报或永不触发。先在这里看趋势。\n\n回补补偿(reason=id-card-route-conflict)是 CompensationTriggered 告警的数据源，阈值是 > 0 —— 身份证哈希撞号设计上几乎不该发生，发生了那一笔预约就没成。卡单进入(stuck_intake)相反，它没有告警规则：那是流量型计数器，任何阈值都得先有业务基线，现在没有，编一个出来只会误报或永不触发。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "reservex-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (source_group) (increase(reservex_deadletter_captured_total[$__interval]))",
+          "legendFormat": "死信 {{source_group}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (topic) (increase(reservex_mq_send_failed_total[$__interval]))",
+          "legendFormat": "发送失败 {{topic}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (reason) (increase(reservex_stuck_intake_total[$__interval]))",
+          "legendFormat": "转卡单 {{reason}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "reservex-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason) (increase(reservex_compensate_triggered_total[$__interval]))",
+          "legendFormat": "回补补偿 {{reason}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "降级前兆:到顶之前唯一能看到的信号",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Redis 内存占比",
+      "description": "08 §7.3:maxmemory-policy 是 noeviction,内存到顶后写命令直接返 OOM —— 抢号全线降级,连登录写 refresh 也失败。而此时 redis-cli ping 依然 PONG、healthcheck 依然绿(§304:restart 不管'进程活着但不健康')。这条曲线是到顶之前唯一的前兆。告警:RedisMemoryHigh(>70% 持续 5m,critical)。\n\n⚠️ maxmemory=0(未限制)时分母为 0,这里会没有数据而不是显示 0%。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "reservex-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "redis_memory_used_bytes / (redis_memory_max_bytes > 0)",
+          "legendFormat": "已用/上限"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.7
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "MQ 消费积压",
+      "description": "rocketmq_consumer_lag_messages(broker 自带 PROM 导出,broker.conf 的 metricsExporterType)。消费跟不上生产,持续积压会把 pending 落库时延推过超时线,进而造出卡单。告警:MqConsumerLagHigh(>1000 持续 10m,warning)。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "reservex-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (consumer_group, topic) (rocketmq_consumer_lag_messages)",
+          "legendFormat": "{{consumer_group}} / {{topic}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1000
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "线程池 / 连接池占用",
+      "description": "两个池的占用率。\n\n· @Scheduled 池:PendingScanner / ReconcileService / ExpiryScanner 全挂在上面,它卡死等于补偿链路整体停摆(告警 ScheduledPoolExhausted,满 15m 即 critical)。分母用 core 不用 max —— ScheduledThreadPoolExecutor 只用核心线程,max 恒为 2147483647。\n· Hikari 池:占满后业务线程堵在取连接上,表现是整体变慢而非报错(告警 HikariPoolSaturated,>80% 持续 5m)。\n\n⚠️ Hikari 只覆盖 hikari-single。分片侧的池被 ShardingSphere 包在内部,不出现在 hikaricp_* 里 —— 别据此以为分片池也被盯着了。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "reservex-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "executor_active_threads{name=\"taskScheduler\"} / clamp_min(executor_pool_core_threads{name=\"taskScheduler\"}, 1)",
+          "legendFormat": "@Scheduled 池"
+        },
+        {
+          "refId": "B",
+          "expr": "hikaricp_connections_active / clamp_min(hikaricp_connections_max, 1)",
+          "legendFormat": "Hikari {{pool}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.8
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "现场:哪一笔、为什么",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 10,
+      "type": "logs",
+      "title": "backend 日志(级别 = $level)",
+      "description": "ECS JSON,由 alloy 采自 /app/logs/reservex.json。\n\n用法:上面的图定位到时刻 → 这里把时间范围收窄到那几分钟 → 从行里复制 requestId → 改查询为 {service=\"reservex-backend\"} | json | requestId=\"<粘贴>\",就能把 HTTP 侧与消息侧属于同一笔的行全部串出来(RequestIdFilter 把它放进 MDC,贯穿两侧)。\n\n⚠️ 只有 backend 的日志在这里。其余容器仍用 docker compose logs 看 —— alloy 故意不挂 docker socket(挂了等于把宿主 root 交出去)。",
+      "datasource": {
+        "type": "loki",
+        "uid": "reservex-loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=\"reservex-backend\", level=\"$level\"}",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": true,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      }
+    }
+  ]
+}

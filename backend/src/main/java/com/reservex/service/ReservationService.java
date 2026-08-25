@@ -18,6 +18,7 @@ import com.reservex.mapper.sharding.ReservationTransitionOutboxMapper;
 import com.reservex.mapper.single.StateLogMapper;
 import com.reservex.mapper.single.StuckReservationMapper;
 import com.reservex.message.ReservationCreatedMessage;
+import com.reservex.metrics.ReserveXMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.slf4j.MDC;
@@ -61,6 +62,7 @@ public class ReservationService {
     private final RateLimiter localLimiter;
     private final CaptchaService captchaService;
     private final StuckReservationMapper stuckMapper;
+    private final ReserveXMetrics metrics;
 
     public ReservationService(IdGenerator idGenerator,
                               TimeSupport time,
@@ -76,7 +78,8 @@ public class ReservationService {
                               StateLogMapper stateLogMapper,
                               CaptchaService captchaService,
                               StuckReservationMapper stuckMapper,
-                              @Qualifier("shardingTxManager") PlatformTransactionManager txManager) {
+                              @Qualifier("shardingTxManager") PlatformTransactionManager txManager,
+                              ReserveXMetrics metrics) {
         this.idGenerator = idGenerator;
         this.time = time;
         this.props = props;
@@ -91,6 +94,7 @@ public class ReservationService {
         this.stateLogMapper = stateLogMapper;
         this.captchaService = captchaService;
         this.stuckMapper = stuckMapper;
+        this.metrics = metrics;
         this.shardingTx = new TransactionTemplate(txManager);
         this.localLimiter = RateLimiter.create(props.getRatelimit().getApiLocalRps());
     }
@@ -215,6 +219,7 @@ public class ReservationService {
         } catch (RuntimeException e) {
             // 已向用户返回的预约不能随传输故障过期；补投成功后 scanner 会恢复 TTL。
             redis.persist(occupyKey);
+            metrics.mqSendFailed("reservation-created");
             log.error("预约消息发送失败，等待 pending scanner 补投 rno={}", reservationNo, e);
         }
         return new GrabResult(reservationNo, true);

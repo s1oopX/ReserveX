@@ -1,0 +1,68 @@
+# ReserveX 告警路由(08 §6.1)—— 模板,由 entrypoint.sh 渲染后使用
+#
+# 规则触发了还得送到人手上,否则和没装告警一样。
+#
+# ⚠️ __XXX__ 是占位符,不是环境变量:Alertmanager **不展开**配置里的 ${VAR},
+#    直接写 ${ALERT_EMAIL_TO} 会被当成字面量收件人,发信失败且原因难查。
+#    渲染由 entrypoint.sh 做(与 docker/rocketmq/broker-entrypoint.sh 同一套路:
+#    先用 :? 校验变量存在,缺了就启动失败,不静默降级)。
+# ⚠️ 口令不在本文件里:走 smtp_auth_password_file 读 Compose secret 挂进来的
+#    只读文件(compose 用 secrets.environment 从 QQ_SMTP_PASSWORD 取值)。
+#    内联等于把 QQ 授权码提交进仓库。末尾换行无所谓 —— Alertmanager 读这个
+#    文件时会 TrimSpace(v0.28.1 notify/email/email.go:384)。
+
+global:
+  # 一条告警停止上报后多久算已恢复。必须 > prometheus 的 evaluation_interval,
+  # 否则规则还在正常评估就被判成 resolved,收件箱里会出现"恢复了又来了"的抖动。
+  resolve_timeout: 5m
+  smtp_smarthost: "smtp.qq.com:587"
+  smtp_from: "__SMTP_FROM__"
+  smtp_auth_username: "__SMTP_FROM__"
+  smtp_auth_password_file: /run/secrets/smtp_password
+  # 587 + STARTTLS。应用侧用的是 465 隐式 TLS(application.yml),两处不同是
+  # 客户端差异:Alertmanager 对 587/STARTTLS 的支持在各版本上最稳,不必赌 465。
+  smtp_require_tls: true
+
+route:
+  # 按域和告警名聚合:同一次故障(比如 broker 挂了带出一串积压)合成一封,
+  # 不要一条规则一封邮件把值班的人淹掉。
+  group_by: ["alertname", "domain"]
+  group_wait: 30s
+  group_interval: 5m
+  # 未恢复的告警多久重发一次。补偿链路的问题都要人工处置,4h 提醒一次,
+  # 免得"看到过了"就再也不响。
+  repeat_interval: 4h
+  receiver: ops-email
+  routes:
+    # critical 立刻发,不等聚合窗口攒够。
+    - matchers: ['severity="critical"']
+      receiver: ops-email
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: ops-email
+    email_configs:
+      - to: "__ALERT_EMAIL_TO__"
+        send_resolved: true
+        headers:
+          Subject: '[ReserveX/{{ .CommonLabels.severity }}] {{ .CommonLabels.alertname }}'
+
+inhibit_rules:
+  # 抓取目标掉线时,它名下的"指标消失"告警(XxxMetricsMissing)是同一件事的回声,
+  # 压掉。保留 MonitoringTargetDown 本身 —— 那才是要处置的事实。
+  #
+  # 自压问题不存在:源和目标两侧都匹配时,Alertmanager 会把"同样匹配目标侧"的
+  # 告警排除出源集合(v0.28.1 inhibit/inhibit.go:137 excludeTwoSidedMatch),
+  # 所以 MonitoringTargetDown 不会把自己静音掉。
+  #
+  # ⚠️ 只拿 env 对齐是将就:absent() 产出的序列不带 job 标签,没法按目标精确对齐。
+  #    代价是任一目标掉线会压掉全部 meta 噪音 —— 可接受,meta 组本就是派生信号。
+  - source_matchers: ['alertname="MonitoringTargetDown"']
+    target_matchers: ['domain="meta"']
+    equal: ["env"]
+
+  # ⚠️ 不要再加一条压 domain="compensation" 的规则(本轮写过又删掉的坑):
+  #    equal 只能对齐 env,而所有序列的 env 都是 compose,那条规则的真实语义是
+  #    "任何一个抓取目标掉线 → 全部补偿告警静音"。redis-exporter 挂掉就足以吞掉
+  #    真实的死信告警,而且现象是"很安静" —— 正是本轮要消灭的失效模式。

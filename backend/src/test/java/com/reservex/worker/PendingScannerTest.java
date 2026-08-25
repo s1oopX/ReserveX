@@ -8,7 +8,9 @@ import com.reservex.mapper.sharding.UserMapper;
 import com.reservex.mapper.single.StuckReservationMapper;
 import com.reservex.message.ReservationCreatedMessage;
 import com.reservex.lua.LuaScripts;
+import com.reservex.metrics.ReserveXMetrics;
 import com.reservex.service.ReservationService;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -56,14 +58,21 @@ class PendingScannerTest {
         when(time.now()).thenReturn(LocalDateTime.of(1970, 1, 1, 0, 16, 40));
         when(time.zone()).thenReturn(ZoneId.of("UTC"));
 
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
         new PendingScanner(redis, mock(RocketMQTemplate.class), mock(UserMapper.class),
-                stuck, new ReserveXProperties(), time, mock(LuaScripts.class)).scan();
+                stuck, new ReserveXProperties(), time, mock(LuaScripts.class),
+                new ReserveXMetrics(registry)).scan();
 
         ArgumentCaptor<StuckReservation> captured = ArgumentCaptor.forClass(StuckReservation.class);
         verify(stuck).insertIgnore(captured.capture());
         org.junit.jupiter.api.Assertions.assertEquals(idCardHash, captured.getValue().getIdCardHash());
         org.junit.jupiter.api.Assertions.assertEquals(
                 "dup:2026-08-16:" + idCardHash, captured.getValue().getDupKey());
+        // 只落表不报数就是静默:告警要靠这个计数器 + stuck.pending gauge。
+        org.junit.jupiter.api.Assertions.assertEquals(1d, registry
+                .get(ReserveXMetrics.STUCK_INTAKE)
+                .tag("reason", ReserveXMetrics.REASON_USER_MISSING)
+                .counter().count());
     }
 
     @Test
@@ -85,7 +94,8 @@ class PendingScannerTest {
         when(time.now()).thenReturn(LocalDateTime.of(1970, 1, 1, 0, 16, 40));
         when(time.zone()).thenReturn(ZoneId.of("UTC"));
         new PendingScanner(redis, mock(RocketMQTemplate.class), mock(UserMapper.class),
-                mock(StuckReservationMapper.class), new ReserveXProperties(), time, mock(LuaScripts.class)).scan();
+                mock(StuckReservationMapper.class), new ReserveXProperties(), time,
+                mock(LuaScripts.class), ReserveXMetrics.noop()).scan();
 
         verify(redis).persist(ReservationService.occupyKey(1L));
         verify(zset, never()).remove(ReservationService.PENDING_KEY, "1");
@@ -117,10 +127,17 @@ class PendingScannerTest {
         TimeSupport time = mock(TimeSupport.class);
         when(time.now()).thenReturn(LocalDateTime.of(1970, 1, 1, 0, 16, 40));
         when(time.zone()).thenReturn(ZoneId.of("UTC"));
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
         new PendingScanner(redis, mock(RocketMQTemplate.class), users,
-                mock(StuckReservationMapper.class), new ReserveXProperties(), time, mock(LuaScripts.class)).scan();
+                mock(StuckReservationMapper.class), new ReserveXProperties(), time,
+                mock(LuaScripts.class), new ReserveXMetrics(registry)).scan();
 
         verify(redis, times(2)).persist(occupyKey);
+        // reinject_count=5 撞上限 → 转卡单,tag 必须是耗尽而不是用户缺失。
+        org.junit.jupiter.api.Assertions.assertEquals(1d, registry
+                .get(ReserveXMetrics.STUCK_INTAKE)
+                .tag("reason", ReserveXMetrics.REASON_REINJECT_EXHAUSTED)
+                .counter().count());
         verify(redis, never()).expire(eq(occupyKey), any(Duration.class));
     }
 
@@ -156,11 +173,17 @@ class PendingScannerTest {
         when(time.zone()).thenReturn(ZoneId.of("UTC"));
         LuaScripts lua = mock(LuaScripts.class);
         when(lua.evalLong(eq(LuaScripts.Script.REINJECT), any(), any(Object[].class))).thenReturn(1L);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
         new PendingScanner(redis, rocketMQ, users, mock(StuckReservationMapper.class),
-                new ReserveXProperties(), time, lua).scan();
+                new ReserveXProperties(), time, lua, new ReserveXMetrics(registry)).scan();
 
         verify(redis).persist(occupyKey);
         verify(redis, never()).expire(eq(occupyKey), any(Duration.class));
         verify(hash, never()).put(eq(occupyKey), eq("reinject_count"), any());
+        // broker 挂了只写日志的话,「补投一直失败」在外部看不出来。
+        org.junit.jupiter.api.Assertions.assertEquals(1d, registry
+                .get(ReserveXMetrics.REINJECT_TOTAL)
+                .tag("outcome", "failed")
+                .counter().count());
     }
 }

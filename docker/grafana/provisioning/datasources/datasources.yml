@@ -1,0 +1,38 @@
+# Grafana 数据源(自动装配,不靠手点 UI)
+#
+# 为什么 provisioning 而不是界面里加:界面加的存在 grafana 的 sqlite 里,
+# 卷一删就没了,而且"当时怎么配的"没有任何记录。写成文件才进版本控制。
+#
+# ⚠️ 两个数据源都是 internal 的 data 网内地址,不经宿主端口。
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: reservex-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      # 与 prometheus.yml 的 scrape_interval 对齐:填错会让图上出现假的锯齿
+      # (Grafana 按这个值决定 $__rate_interval)。
+      timeInterval: 15s
+    editable: false
+
+  - name: Loki
+    type: loki
+    uid: reservex-loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # 单次查询返回行数上限。默认 1000;排障时按 requestId 串一笔预约的全部
+      # 日志行远用不到,调大只会让浏览器卡。
+      maxLines: 1000
+    # ⚠️ 故意不配 derivedFields(把 requestId 变成可点链接那个功能):
+    #    按 label 匹配的写法(matcherType: label)在本版本文档里查不到,只有
+    #    matcherRegex 是确定支持的;而 ECS 把 requestId 作为 JSON 字段而非
+    #    Loki 标签,正则要去匹配整行 JSON,写法脆且校验不了。
+    #    面板里已备好按 requestId 过滤的查询,够用 —— 宁可少个便利功能,
+    #    也不留一段没验证过的配置在这儿。
+    editable: false
