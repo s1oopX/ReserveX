@@ -73,24 +73,24 @@ export default function Login() {
   }
 
   return (
-    <Card className="designer-card-elevated rounded-2xl overflow-hidden shadow-2xl border border-white/80">
-      <CardHeader className="space-y-1.5 pb-4 border-b border-slate-100 pt-6 px-6 sm:px-8">
+      <Card className="overflow-hidden rounded-2xl border-slate-200 bg-white shadow-[0_18px_45px_rgba(18,59,67,0.09)]">
+      <CardHeader className="space-y-2 border-b border-slate-100 px-6 pb-6 pt-8 sm:px-8">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-2xl font-black font-sans text-slate-900 tracking-tight">账号登录</CardTitle>
-          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200/60 shadow-2xs">
+            <CardTitle className="font-serif text-3xl font-semibold text-[#123b43]">欢迎回来</CardTitle>
+            <span className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary">
             <ShieldCheck className="h-3 w-3" />
-            官方实名凭证
+            实名信息保护
           </span>
         </div>
-        <CardDescription className="text-xs text-slate-600 font-medium">
-          欢迎使用 ReserveX 湿地公园预约系统
+        <CardDescription className="text-sm">
+          登录后查看场次、提交预约并管理动态入园凭证
         </CardDescription>
       </CardHeader>
 
-      <CardContent className="pt-6 px-6 sm:px-8">
+      <CardContent className="px-6 pb-7 pt-7 sm:px-8">
         {registered && (
-          <Alert variant="success" className="mb-5 border-emerald-200 bg-emerald-50/70 text-emerald-900 rounded-xl">
-            <AlertDescription className="text-xs font-medium">
+          <Alert variant="success" className="mb-5">
+            <AlertDescription className="text-sm">
               注册成功，请使用您的邮箱和密码登录。
             </AlertDescription>
           </Alert>
@@ -98,7 +98,7 @@ export default function Login() {
 
         <form onSubmit={submit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="login-email" className="text-xs font-semibold text-slate-800">邮箱地址</Label>
+            <Label htmlFor="login-email">邮箱地址</Label>
             <div className="relative">
               <Mail className="absolute left-3.5 top-3.5 h-4 w-4 text-slate-400" />
               <Input
@@ -109,13 +109,13 @@ export default function Login() {
                 autoComplete="username"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="h-11 pl-10 rounded-xl border-slate-200 bg-slate-50/80 focus:bg-white focus:ring-2 focus:ring-emerald-500/20 text-sm font-medium transition-all"
+                className="h-12 rounded-xl border-slate-200 bg-slate-50/60 pl-10"
               />
             </div>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="login-password" className="text-xs font-semibold text-slate-800">登录密码</Label>
+            <Label htmlFor="login-password">登录密码</Label>
             <div className="relative">
               <Lock className="absolute left-3.5 top-3.5 h-4 w-4 text-slate-400" />
               <Input
@@ -126,12 +126,12 @@ export default function Login() {
                 autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="h-11 pl-10 pr-10 rounded-xl border-slate-200 bg-slate-50/80 focus:bg-white focus:ring-2 focus:ring-emerald-500/20 text-sm font-medium transition-all"
+                className="h-12 rounded-xl border-slate-200 bg-slate-50/60 pl-10 pr-10"
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3.5 top-3.5 text-slate-400 hover:text-slate-600 transition-colors"
+                className="absolute right-3.5 top-3.5 rounded-md p-1 text-slate-400 transition-colors hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label={showPassword ? '隐藏密码' : '显示密码'}
               >
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -140,8 +140,8 @@ export default function Login() {
           </div>
 
           {msg && (
-            <Alert variant="destructive" className="border-rose-200 bg-rose-50/70 text-rose-900 rounded-xl">
-              <AlertDescription className="text-xs">
+            <Alert variant="destructive">
+              <AlertDescription className="text-sm">
                 <div>{msg}</div>
                 {requestId && <RequestIdHint requestId={requestId} />}
               </AlertDescription>
@@ -151,22 +151,22 @@ export default function Login() {
           <Button
             type="submit"
             disabled={busy}
-            className="w-full h-11 rounded-xl bg-emerald-700 hover:bg-emerald-800 active:scale-[0.99] text-white font-bold text-sm shadow-md shadow-emerald-700/20 transition-all hover:scale-[1.01] gap-2"
+            className="h-12 w-full gap-2 rounded-xl text-sm font-semibold"
           >
-            {busy ? '正在登录…' : '登录系统'}
+            {busy ? '正在登录…' : '登录并查看场次'}
             {!busy && <ArrowRight className="h-4 w-4" />}
           </Button>
         </form>
       </CardContent>
 
-      <CardFooter className="flex flex-col space-y-2 border-t border-slate-100/80 py-4 px-6 sm:px-8 text-center text-xs text-slate-600 bg-slate-50/40">
+      <CardFooter className="flex flex-col space-y-2 border-t border-slate-100 bg-slate-50/60 px-6 py-5 text-center text-sm text-muted-foreground sm:px-8">
         <div>
           没有账号？{' '}
-          <Link to="/register" className="font-bold text-emerald-800 underline-offset-4 hover:underline">
+          <Link to="/register" className="font-medium text-primary underline-offset-4 hover:underline">
             立即注册
           </Link>
         </div>
-        <div className="text-[11px] text-slate-500 font-normal">
+        <div className="text-xs">
           首次登录系统？可使用统一发放的初始凭证登录改密。
         </div>
       </CardFooter>

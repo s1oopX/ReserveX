@@ -1,18 +1,12 @@
 import { Bell } from 'lucide-react'
 import { ApiUnavailable } from '@/components/common/ApiUnavailable'
 import { EmptyState } from '@/components/common/EmptyState'
+import { PageHeader } from '@/components/common/PageHeader'
 
 export default function Notifications() {
   return (
     <div className="space-y-6 max-w-xl mx-auto">
-      <div>
-        <h1 className="text-xl font-bold tracking-tight text-foreground font-serif">
-          消息通知
-        </h1>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          系统广播与个人预约状态推送提醒
-        </p>
-      </div>
+      <PageHeader title="消息通知" description="系统广播与个人预约状态推送提醒" />
 
       <ApiUnavailable
         featureName="消息通知"

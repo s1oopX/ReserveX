@@ -62,19 +62,19 @@ export default function ChangePassword() {
   }
 
   return (
-    <Card className="shadow-xl border border-slate-200/80 rounded-2xl bg-card/95 backdrop-blur-xs">
-      <CardHeader className="space-y-1.5 pb-4 border-b border-slate-100">
+    <Card className="overflow-hidden rounded-2xl border-slate-200 bg-white shadow-[0_18px_45px_rgba(18,59,67,0.09)]">
+      <CardHeader className="space-y-2 border-b border-slate-100 pb-6 pt-8">
         <div className="flex items-center gap-2">
           <KeyRound className="h-5 w-5 text-emerald-700" />
-          <CardTitle className="text-2xl font-bold font-serif text-slate-900 tracking-tight">修改密码</CardTitle>
+          <CardTitle className="font-serif text-3xl font-semibold text-[#123b43]">修改密码</CardTitle>
         </div>
-        <CardDescription className="text-xs text-slate-500">
-          {isForced ? '检测到您首次登录，请先修改初始密码' : '为了您的账号安全，请定期更换密码'}
+        <CardDescription className="text-sm">
+          {isForced ? '首次登录需要先设置新密码，完成后即可继续使用预约系统' : '更新密码后，现有登录会话将结束，需要重新登录'}
         </CardDescription>
       </CardHeader>
-      <CardContent className="pt-6">
+      <CardContent className="px-6 pb-7 pt-7 sm:px-8">
         {isForced && (
-          <Alert variant="warning" className="mb-5 border-amber-200 bg-amber-50/70 text-amber-900">
+          <Alert variant="warning" className="mb-5">
             <AlertTriangle className="h-4 w-4" />
             <AlertTitle className="font-semibold text-xs">首次登录强制改密</AlertTitle>
             <AlertDescription className="text-xs">
@@ -85,57 +85,60 @@ export default function ChangePassword() {
 
         <form onSubmit={submit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="cp-old" className="text-xs font-semibold text-slate-700">原密码 / 初始密码</Label>
+            <Label htmlFor="cp-old">原密码 / 初始密码</Label>
             <div className="relative">
               <Lock className="absolute left-3.5 top-3.5 h-4 w-4 text-slate-400" />
               <Input
                 id="cp-old"
                 type="password"
                 required
+                autoComplete="current-password"
                 placeholder="请输入当前密码"
                 value={oldPassword}
                 onChange={(e) => setOldPassword(e.target.value)}
-                className="h-11 pl-10 rounded-lg border-slate-200 bg-slate-50/50 focus:bg-background focus:ring-emerald-500/20 text-sm transition-all"
+                className="h-12 rounded-xl border-slate-200 bg-slate-50/60 pl-10"
               />
             </div>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="cp-new" className="text-xs font-semibold text-slate-700">新密码</Label>
+            <Label htmlFor="cp-new">新密码</Label>
             <div className="relative">
               <Lock className="absolute left-3.5 top-3.5 h-4 w-4 text-slate-400" />
               <Input
                 id="cp-new"
                 type="password"
                 required
+                autoComplete="new-password"
                 minLength={8}
                 placeholder="至少 8 位新密码"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                className="h-11 pl-10 rounded-lg border-slate-200 bg-slate-50/50 focus:bg-background focus:ring-emerald-500/20 text-sm transition-all"
+                className="h-12 rounded-xl border-slate-200 bg-slate-50/60 pl-10"
               />
             </div>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="cp-confirm" className="text-xs font-semibold text-slate-700">确认新密码</Label>
+            <Label htmlFor="cp-confirm">确认新密码</Label>
             <div className="relative">
               <Lock className="absolute left-3.5 top-3.5 h-4 w-4 text-slate-400" />
               <Input
                 id="cp-confirm"
                 type="password"
                 required
+                autoComplete="new-password"
                 minLength={8}
                 placeholder="再次输入新密码"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="h-11 pl-10 rounded-lg border-slate-200 bg-slate-50/50 focus:bg-background focus:ring-emerald-500/20 text-sm transition-all"
+                className="h-12 rounded-xl border-slate-200 bg-slate-50/60 pl-10"
               />
             </div>
           </div>
 
           {msg && (
-            <Alert variant="destructive" className="border-rose-200 bg-rose-50/70 text-rose-900">
+            <Alert variant="destructive">
               <AlertDescription className="text-xs">
                 <div>{msg}</div>
                 {requestId && <RequestIdHint requestId={requestId} />}
@@ -152,9 +155,9 @@ export default function ChangePassword() {
             <Button
               type="submit"
               disabled={busy}
-              className="flex-1 h-11 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-semibold shadow-sm transition-all duration-200 hover:-translate-y-0.5"
+              className="h-12 flex-1 rounded-xl font-semibold"
             >
-              {busy ? '正在提交…' : '确认修改并重新登录'}
+              {busy ? '正在更新密码…' : '更新密码并重新登录'}
             </Button>
           </div>
         </form>

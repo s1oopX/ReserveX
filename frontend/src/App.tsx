@@ -8,6 +8,7 @@ import { RoleGuard } from './components/common/RoleGuard'
 import { Toaster } from './components/ui/sonner'
 
 import LandingPage from './pages/LandingPage'
+import Architecture from './pages/Architecture'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import ChangePassword from './pages/ChangePassword'
@@ -49,6 +50,7 @@ export default function App() {
       <Routes>
         {/* Public Landing Page */}
         <Route path="/" element={<LandingPage />} />
+        <Route path="/architecture" element={<Architecture />} />
 
         {/* Public Auth & Notice Routes */}
         <Route element={<PublicLayout />}>

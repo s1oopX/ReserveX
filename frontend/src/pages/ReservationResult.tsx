@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { CheckCircle2, QrCode, Ticket, RefreshCw } from 'lucide-react'
+import { CheckCircle2, CircleDashed, Database, QrCode, Ticket, RefreshCw, ServerCog, AlertTriangle, XCircle } from 'lucide-react'
 import { reservationApi, type ReservationVO } from '@/api/reservation'
 import { Code } from '@/api/codes'
 import { isApiError } from '@/api/http'
@@ -8,6 +8,7 @@ import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/componen
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
+import { getReservationResultState } from '@/lib/reservationResultState'
 
 export default function ReservationResult() {
   const { rno } = useParams<{ rno: string }>()
@@ -15,6 +16,7 @@ export default function ReservationResult() {
   const [confirming, setConfirming] = useState<boolean>(false)
   const [loading, setLoading] = useState<boolean>(true)
   const [errorMsg, setErrorMsg] = useState<string>('')
+  const [retryNonce, setRetryNonce] = useState(0)
 
   useEffect(() => {
     if (!rno) return
@@ -52,20 +54,28 @@ export default function ReservationResult() {
     return () => {
       isSubscribed = false
     }
-  }, [rno])
+  }, [rno, retryNonce])
+
+  const resultState = detail ? getReservationResultState(detail.status) : null
+  const confirmed = resultState?.canShowQr === true
+  const pending = resultState?.pending === true || confirming
+  const terminalFailure = resultState?.terminalFailure === true
+  const title = resultState?.title ?? (confirming ? '名额已预占' : '正在获取预约状态')
+  const description = resultState?.description ?? '正在读取预约详情，请稍候。'
+  const StatusIcon = confirmed ? CheckCircle2 : terminalFailure ? XCircle : pending ? CircleDashed : AlertTriangle
 
   return (
-    <div className="max-w-md mx-auto py-6">
-      <Card className="shadow-lg border-border text-center">
-        <CardHeader className="pt-8 pb-4">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 mb-3">
-            <CheckCircle2 className="h-10 w-10 text-emerald-600" />
+    <div className="mx-auto max-w-lg py-8">
+      <Card className="overflow-hidden rounded-2xl border-slate-200 bg-white text-center shadow-[0_18px_45px_rgba(18,59,67,0.09)]">
+        <CardHeader className="border-b border-slate-100 pb-6 pt-10">
+          <div className={`mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full ${confirmed ? 'bg-primary/10 text-primary' : terminalFailure ? 'bg-rose-50 text-rose-700' : 'bg-blue-50 text-blue-700'}`}>
+            <StatusIcon className={`h-8 w-8 ${pending ? 'animate-spin' : ''}`} />
           </div>
-          <CardTitle className="text-2xl font-bold text-foreground font-serif">
-            {confirming ? '预约正在确认' : '预约已受理'}
+          <CardTitle className="font-serif text-3xl font-semibold text-[#123b43]">
+            {title}
           </CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            {confirming ? '系统正在处理您的预约配额，请稍候…' : '凭证生成成功，请凭入园二维码准时入园游览。'}
+            {description}
           </p>
         </CardHeader>
 
@@ -80,7 +90,7 @@ export default function ReservationResult() {
               <AlertDescription>{errorMsg}</AlertDescription>
             </Alert>
           ) : (
-            <div className="rounded-lg bg-muted/40 p-4 space-y-2 text-sm text-left font-mono">
+            <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50/70 p-5 text-left font-mono text-sm">
               <div className="flex justify-between border-b pb-2">
                 <span className="text-muted-foreground font-sans">预约编号:</span>
                 <span className="font-bold text-foreground">{rno}</span>
@@ -97,28 +107,45 @@ export default function ReservationResult() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground font-sans">当前状态:</span>
-                    <span className="text-emerald-700 font-sans font-semibold">预约成功</span>
+                    <span className={`font-sans font-semibold ${confirmed ? 'text-primary' : terminalFailure ? 'text-destructive' : 'text-blue-700'}`}>{resultState?.statusLabel ?? '读取中'}</span>
                   </div>
                 </>
               )}
             </div>
           )}
 
-          {confirming && (
-            <div className="flex items-center justify-center gap-2 text-xs text-amber-700 py-2">
-              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-              <span>确认中，页面正在自动刷新…</span>
+          {!errorMsg && (
+            <div className="rounded-xl border bg-muted/20 p-4 text-left">
+              <div className="mb-3 text-xs font-semibold text-foreground">本次处理状态</div>
+              <div className="space-y-2.5 text-xs">
+                <div className="flex items-center justify-between gap-3"><span className="flex items-center gap-2 text-muted-foreground"><ServerCog className="h-4 w-4 text-primary" />Redis 原子预占</span><span className="font-medium text-primary">已完成</span></div>
+                <div className="flex items-center justify-between gap-3"><span className="flex items-center gap-2 text-muted-foreground"><RefreshCw className={`h-4 w-4 text-blue-600 ${pending ? 'animate-spin' : ''}`} />异步确认</span><span className={confirmed ? 'font-medium text-primary' : pending ? 'font-medium text-blue-700' : 'font-medium text-muted-foreground'}>{confirmed ? '已完成' : pending ? '处理中' : '未继续'}</span></div>
+                <div className="flex items-center justify-between gap-3"><span className="flex items-center gap-2 text-muted-foreground"><Database className="h-4 w-4 text-indigo-600" />预约详情可读取</span><span className={confirmed ? 'font-medium text-primary' : terminalFailure ? 'font-medium text-destructive' : 'font-medium text-muted-foreground'}>{confirmed ? '可用' : terminalFailure ? '已终止' : '等待中'}</span></div>
+              </div>
             </div>
+          )}
+
+          {confirming && !loading && (
+            <Button variant="outline" size="sm" onClick={() => { setLoading(true); setRetryNonce((value) => value + 1) }} className="gap-2">
+              <RefreshCw className="h-4 w-4" />
+              再次查询确认状态
+            </Button>
           )}
         </CardContent>
 
-        <CardFooter className="flex flex-col gap-2.5 p-6 border-t">
-          {rno && (
+        <CardFooter className="flex flex-col gap-2.5 border-t border-slate-100 bg-slate-50/60 p-6">
+          {rno && confirmed && (
             <Button asChild className="w-full gap-2 font-semibold" size="lg">
               <Link to={`/reservation/${rno}/qr`}>
                 <QrCode className="h-5 w-5" />
                 <span>查看出示入园码</span>
               </Link>
+            </Button>
+          )}
+          {pending && (
+            <Button disabled className="w-full gap-2 font-semibold" size="lg">
+              <QrCode className="h-5 w-5" />
+              确认完成后可查看入园码
             </Button>
           )}
           <Button asChild variant="outline" className="w-full gap-2">

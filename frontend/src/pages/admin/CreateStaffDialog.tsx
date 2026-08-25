@@ -52,25 +52,27 @@ export function CreateStaffDialog({ onClose, onDone }: { onClose: () => void; on
   }
 
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+    <Dialog open onOpenChange={(o) => { if (!o && !submitting) onClose() }}>
       <DialogHeader>
         <DialogTitle>新建 STAFF 账号</DialogTitle>
         <DialogDescription>
-          创建核销人员账号。role 固定为 STAFF,无法通过此接口创建 ADMIN。
+          创建核销人员账号。角色固定为 STAFF，无法通过此接口创建 ADMIN。
         </DialogDescription>
       </DialogHeader>
-      <div className="py-4 space-y-3">
-        <Field label="邮箱" value={email} onChange={setEmail} placeholder="staff@example.com" />
-        <Field label="手机号" value={phone} onChange={setPhone} placeholder="11 位手机号" />
-        <Field label="密码" value={password} onChange={setPassword} placeholder="至少 8 位" type="password" />
-        <Field label="身份证号" value={idCard} onChange={setIdCard} placeholder="18 位身份证号" />
-        {errorMsg && <p className="text-xs text-destructive">{errorMsg}</p>}
-      </div>
-      <DialogFooter>
-        <Button variant="outline" onClick={onClose} disabled={submitting}>取消</Button>
-        <Button onClick={submit} disabled={submitting}>{submitting ? '提交中...' : '确认创建'}</Button>
-      </DialogFooter>
-      <DialogClose onClick={onClose} />
+      <form onSubmit={(e) => { e.preventDefault(); submit() }}>
+        <div className="py-4 space-y-3">
+          <Field label="邮箱" value={email} onChange={setEmail} placeholder="staff@example.com" />
+          <Field label="手机号" value={phone} onChange={setPhone} placeholder="11 位手机号" />
+          <Field label="密码" value={password} onChange={setPassword} placeholder="至少 8 位" type="password" />
+          <Field label="身份证号" value={idCard} onChange={setIdCard} placeholder="18 位身份证号" />
+          {errorMsg && <p role="alert" className="text-sm text-destructive">{errorMsg}</p>}
+        </div>
+        <DialogFooter className="gap-2">
+          <Button type="button" variant="outline" onClick={onClose} disabled={submitting}>取消</Button>
+          <Button type="submit" disabled={submitting}>{submitting ? '提交中…' : '确认创建'}</Button>
+        </DialogFooter>
+      </form>
+      {!submitting && <DialogClose onClick={onClose} />}
     </Dialog>
   )
 }
@@ -83,9 +85,9 @@ function Field({ label, value, onChange, placeholder, type = 'text' }: {
   type?: string
 }) {
   return (
-    <div className="space-y-1.5">
-      <label className="text-sm font-medium text-foreground">{label}</label>
+    <label className="block space-y-1.5 text-sm font-medium text-foreground">
+      <span>{label}</span>
       <Input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
-    </div>
+    </label>
   )
 }

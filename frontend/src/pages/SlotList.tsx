@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Calendar, ChevronRight, Clock, Info, ShieldAlert, Sparkles, RefreshCw, Zap } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Calendar, ChevronRight, Clock, Info, ShieldAlert, RefreshCw, Zap } from 'lucide-react'
 import { reservationApi, type SlotVO } from '@/api/reservation'
 import { captchaApi, type CaptchaVO } from '@/api/captcha'
 import { isApiError } from '@/api/http'
@@ -8,7 +9,6 @@ import { todayInZone, addDaysInZone, nowInZone, formatEpochSeconds } from '@/lib
 
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from '@/components/ui/sheet'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -16,9 +16,14 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { SlotStatusBadge } from '@/components/common/StatusBadge'
 import { ErrorState } from '@/components/common/ErrorState'
 import { RequestIdHint } from '@/components/common/RequestIdHint'
+import { PageHeader } from '@/components/common/PageHeader'
 import { toast } from '@/components/ui/sonner'
+import { getSlotUiStatus, type SlotUiStatus } from '@/lib/slotStatus'
+
+type SlotViewFilter = 'all' | 'available' | 'unreleased' | 'full' | 'ended'
 
 export default function SlotList() {
+  const nav = useNavigate()
   const minDate = todayInZone()
   const defaultDate = addDaysInZone(minDate, 1)
 
@@ -39,6 +44,7 @@ export default function SlotList() {
   const [captcha, setCaptcha] = useState<CaptchaVO | null>(null)
   const [captchaInput, setCaptchaInput] = useState<string>('')
   const [captchaBusy, setCaptchaBusy] = useState<boolean>(false)
+  const [viewFilter, setViewFilter] = useState<SlotViewFilter>('all')
 
   const [isMobile, setIsMobile] = useState<boolean>(false)
 
@@ -131,7 +137,7 @@ export default function SlotList() {
       const res = await reservationApi.grab(selectedSlot.slotId, captchaToken)
       toast.success('名额抢占成功！正在确认预约信息…')
       setOpenModal(false)
-      window.location.href = `/reservation/${res.reservationNo}/result`
+      nav(`/reservation/${res.reservationNo}/result`)
     } catch (err) {
       if (isApiError(err)) {
         setGrabRequestId(err.requestId)
@@ -160,27 +166,28 @@ export default function SlotList() {
   }
 
   const nowStr = nowInZone()
+  const filteredSlots = slots?.filter((slot) => viewFilter === 'all' || getSlotUiStatus(slot, nowStr) === viewFilter)
 
   const modalFormContent = (
     <div className="space-y-4 py-2">
       {selectedSlot && (
-        <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 p-4 space-y-2.5 font-sans text-xs text-slate-800">
-          <div className="flex justify-between items-center pb-2 border-b border-slate-200/60">
-            <span className="text-slate-500">游览日期</span>
-            <span className="font-mono font-bold text-sm text-emerald-800">{selectedSlot.slotDate}</span>
+        <div className="space-y-2.5 rounded-md border bg-muted/30 p-4 text-xs">
+          <div className="flex items-center justify-between border-b pb-2">
+            <span className="text-muted-foreground">游览日期</span>
+            <span className="font-mono text-sm font-semibold text-primary">{selectedSlot.slotDate}</span>
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-slate-500">场次时段</span>
-            <span className="font-mono font-bold text-sm text-slate-900">{String(selectedSlot.slotHour).padStart(2, '0')}:00 场次</span>
+            <span className="text-muted-foreground">场次时段</span>
+            <span className="font-mono text-sm font-semibold">{String(selectedSlot.slotHour).padStart(2, '0')}:00 场次</span>
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-slate-500">建议游览时长</span>
-            <span className="font-medium text-slate-700">{selectedSlot.durationMin} 分钟</span>
+            <span className="text-muted-foreground">建议游览时长</span>
+            <span className="font-medium">{selectedSlot.durationMin} 分钟</span>
           </div>
         </div>
       )}
 
-      <Alert variant="warning" className="border-amber-200 bg-amber-50/70 text-amber-950">
+      <Alert variant="warning">
         <ShieldAlert className="h-4 w-4 text-amber-700 shrink-0" />
         <AlertDescription className="text-xs text-amber-900 font-medium leading-relaxed">
           <strong>重要告知：</strong> 成功预约后不可改签；放弃预约名额<strong>不可恢复且无法退还名额池</strong>。
@@ -189,7 +196,7 @@ export default function SlotList() {
 
       {/* D4 风控验证码:仅在后端要求时出现 */}
       {captcha && (
-        <div className="rounded-xl border border-slate-200 bg-white p-3 flex items-center gap-3">
+        <div className="flex items-center gap-3 rounded-md border bg-background p-3">
           <img
             src={captcha.imageBase64}
             alt="验证码"
@@ -201,7 +208,7 @@ export default function SlotList() {
             value={captchaInput}
             onChange={(e) => setCaptchaInput(e.target.value)}
             placeholder="输入图中字符"
-            className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-300"
+            className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
             disabled={captchaBusy}
             maxLength={8}
           />
@@ -219,7 +226,7 @@ export default function SlotList() {
       )}
 
       {grabError && (
-        <Alert variant="destructive" className="border-rose-200 bg-rose-50/70 text-rose-900">
+        <Alert variant="destructive">
           <AlertDescription className="text-xs">
             <div>{grabError}</div>
             {grabRequestId && <RequestIdHint requestId={grabRequestId} />}
@@ -231,36 +238,16 @@ export default function SlotList() {
 
   return (
     <div className="space-y-6">
-      {/* Header Title */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-slate-200/80 pb-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-serif flex items-center gap-2">
-            <span>湿地公园场次预约</span>
-            <Badge variant="outline" className="text-[11px] font-normal text-emerald-700 border-emerald-200 bg-emerald-50">
-              实名制错峰准入
-            </Badge>
-          </h1>
-          <p className="text-xs text-slate-500 mt-1">
-            每日 10:00 开放次日预约名额 · 一证一天单次有效
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchSlots} className="gap-1.5 rounded-lg text-xs" aria-label="刷新场次">
-            <RefreshCw className="h-3.5 w-3.5" />
-            <span>刷新</span>
-          </Button>
-        </div>
-      </div>
+      <PageHeader title="场次预约" description="每日 10:00 开放次日预约名额 · 一证一天单次有效" actions={<Button variant="outline" size="sm" onClick={fetchSlots} aria-label="刷新场次"><RefreshCw className="h-4 w-4" />刷新</Button>} />
 
       {/* Responsive Interactive Date Capsule Switcher */}
       <div className="space-y-2">
-        <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
+        <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <Calendar className="h-4 w-4 text-emerald-700" />
+            <Calendar className="h-4 w-4 text-primary" />
             <span>选择游览日期 (未来 7 天)</span>
           </span>
-          <span className="font-mono text-slate-400 text-[11px]">当前选中: {date}</span>
+          <span className="font-mono text-[11px]">当前选中：{date}</span>
         </div>
 
         <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
@@ -271,10 +258,10 @@ export default function SlotList() {
                 key={pill.dateStr}
                 type="button"
                 onClick={() => setDate(pill.dateStr)}
-                className={`flex flex-col items-center justify-center min-w-[76px] px-3.5 py-2.5 rounded-xl text-xs transition-all duration-200 shrink-0 border ${
+                className={`flex min-w-[78px] shrink-0 flex-col items-center justify-center rounded-xl border px-3.5 py-3 text-xs transition-colors ${
                   isSelected
-                    ? 'bg-emerald-800 text-white font-bold border-emerald-800 shadow-sm scale-102'
-                    : 'bg-card text-slate-600 border-slate-200/80 hover:border-emerald-300 hover:bg-slate-100/60'
+                    ? 'border-primary bg-primary font-semibold text-primary-foreground'
+                    : 'bg-card text-muted-foreground hover:border-primary/40 hover:bg-muted/40'
                 }`}
               >
                 <span className="text-[11px] opacity-90">{pill.label}</span>
@@ -283,29 +270,38 @@ export default function SlotList() {
             )
           })}
         </div>
+
+        <div className="flex flex-wrap gap-2" aria-label="场次状态筛选">
+          {([
+            ['all', '全部场次'],
+            ['available', '可预约'],
+            ['unreleased', '未放号'],
+            ['full', '已满'],
+            ['ended', '已结束'],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={viewFilter === value}
+              onClick={() => setViewFilter(value)}
+              className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${viewFilter === value ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Banner */}
-      <div className="rounded-2xl bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 p-5 text-white shadow-md flex items-center justify-between border border-emerald-500/20">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 font-bold text-sm text-emerald-300">
-            <Sparkles className="h-4 w-4 text-amber-300" />
-            <span>绿意湿地 · 官方准入凭证</span>
-          </div>
-          <p className="text-xs text-slate-300/80">
-            入园请配合出示本人二代身份证原件与动态 60 秒加密 QR 码
-          </p>
-        </div>
-        <Badge className="bg-emerald-500/20 text-emerald-200 border-emerald-400/30 text-xs font-mono px-3 py-1">
-          {date}
-        </Badge>
+      <div className="flex items-start gap-3 rounded-xl border border-primary/15 bg-[#eef8f4] p-4 text-sm">
+        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+        <div><div className="font-medium">实名预约与现场核验</div><p className="mt-1 text-xs text-muted-foreground">提交后先由 Redis 原子预占名额，再通过消息异步确认；入园请出示本人身份证原件与动态 60 秒二维码。</p></div>
       </div>
 
       {/* Loading Skeletons */}
       {loading && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3, 4, 5, 6].map((i) => (
-            <Card key={i} className="p-5 space-y-3 rounded-2xl border-slate-200/80">
+            <Card key={i} className="space-y-3 p-5">
               <Skeleton className="h-6 w-3/4" />
               <Skeleton className="h-4 w-1/2" />
               <Skeleton className="h-10 w-full mt-4" />
@@ -326,46 +322,33 @@ export default function SlotList() {
 
       {/* Slot List Grid */}
       {!loading && !errorMsg && slots && (
-        slots.length === 0 ? (
-          <Card className="p-12 text-center text-slate-500 border-dashed rounded-2xl">
+        filteredSlots?.length === 0 ? (
+          <Card className="border-dashed p-12 text-center text-muted-foreground">
             <Info className="h-8 w-8 mx-auto mb-2 text-slate-400" />
-            <p className="text-sm font-medium text-slate-700">该日期（{date}）暂无开放场次</p>
-            <p className="text-xs mt-1 text-slate-400">请选择顶部其他日期（如明日或周末）查看。</p>
+            <p className="text-sm font-medium text-slate-700">没有符合当前筛选的场次</p>
+            <p className="text-xs mt-1 text-slate-400">可切换日期或选择“全部场次”查看。</p>
           </Card>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {slots.map((slot) => {
-              const isPast = Boolean(slot.validUntil && slot.validUntil < nowStr)
-              let statusType: 'unreleased' | 'available' | 'full' | 'ended' = 'available'
-
-              if (isPast) {
-                statusType = 'ended'
-              } else if (!slot.released) {
-                statusType = 'unreleased'
-              } else if (slot.full || slot.remain <= 0) {
-                statusType = 'full'
-              }
-
+            {filteredSlots?.map((slot) => {
+              const statusType: SlotUiStatus = getSlotUiStatus(slot, nowStr)
               const releaseAtNum = Number(slot.releaseAt) || 0
               const formattedReleaseAt = releaseAtNum > 0 ? formatEpochSeconds(releaseAtNum) : '未定'
 
               return (
                 <Card
                   key={slot.slotId}
-                  className="group relative flex flex-col justify-between shadow-xs hover:shadow-md transition-all duration-300 border border-slate-200/80 rounded-2xl overflow-hidden hover:-translate-y-0.5"
+                  className="relative flex flex-col justify-between overflow-hidden rounded-2xl border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md"
                 >
-                  {/* Top Highlight Bar */}
-                  <div className="h-1 w-full bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-600 opacity-0 group-hover:opacity-100 transition-opacity" />
-
                   <CardHeader className="pb-3 pt-4">
                     <div className="flex items-center justify-between">
-                      <CardTitle className="text-lg font-bold font-mono text-slate-900 flex items-center gap-1.5">
-                        <Clock className="h-4 w-4 text-emerald-700" />
+                      <CardTitle className="flex items-center gap-1.5 font-serif text-xl font-semibold text-[#123b43]">
+                        <Clock className="h-4 w-4 text-primary" />
                         <span>{String(slot.slotHour).padStart(2, '0')}:00 场次</span>
                       </CardTitle>
                       <SlotStatusBadge status={statusType} />
                     </div>
-                    <CardDescription className="text-xs text-slate-500 mt-1 font-mono">
+                    <CardDescription className="mt-1 font-mono text-xs">
                       时长: {slot.durationMin} 分钟 · 编号 #{slot.slotId}
                     </CardDescription>
                   </CardHeader>
@@ -373,53 +356,38 @@ export default function SlotList() {
                   <CardContent className="pb-4 space-y-2.5">
                     <div className="flex justify-between items-center text-xs">
                       <span className="text-slate-500">放号时点</span>
-                      <span className="font-mono text-slate-700">{formattedReleaseAt}</span>
+                        <span className="font-mono text-slate-700">{formattedReleaseAt}</span>
                     </div>
 
                     <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-500">当前余量</span>
-                      <span className="font-mono font-bold text-emerald-700 text-sm">
+                      <span className="text-muted-foreground">当前余量</span>
+                      <span className="font-mono text-sm font-semibold text-primary">
                         {statusType === 'unreleased' ? '未放号' : `${slot.remain} 人`}
                       </span>
                     </div>
 
-                    {/* Progress Bar for Available Slots */}
-                    {statusType === 'available' && (
-                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-1">
-                        <div
-                          className={`h-full transition-all duration-500 ${
-                            slot.remain < 5
-                              ? 'bg-rose-500 animate-pulse'
-                              : slot.remain < 15
-                              ? 'bg-amber-500'
-                              : 'bg-emerald-600'
-                          }`}
-                          style={{ width: `${Math.min(100, Math.max(8, (slot.remain / 50) * 100))}%` }}
-                        />
-                      </div>
-                    )}
                   </CardContent>
 
-                  <CardFooter className="pt-3 border-t border-slate-100 bg-slate-50/50">
+                  <CardFooter className="border-t border-slate-100 bg-slate-50/60 pt-3">
                     {statusType === 'ended' ? (
-                      <Button disabled variant="outline" className="w-full text-xs text-slate-400 rounded-lg">
+                      <Button disabled variant="outline" className="w-full text-xs text-slate-400">
                         预约已结束
                       </Button>
                     ) : statusType === 'unreleased' ? (
-                      <Button disabled variant="outline" className="w-full text-xs rounded-lg">
-                        尚未放号
+                      <Button disabled variant="outline" className="w-full text-xs">
+                        等待开放
                       </Button>
                     ) : statusType === 'full' ? (
-                      <Button disabled variant="outline" className="w-full text-xs text-rose-600 border-rose-200 bg-rose-50/50 rounded-lg">
+                      <Button disabled variant="outline" className="w-full border-rose-200 bg-rose-50/50 text-xs text-rose-600">
                         名额已满
                       </Button>
                     ) : (
                       <Button
                         onClick={() => handleOpenConfirm(slot)}
-                        className="w-full gap-1.5 font-semibold bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg shadow-xs transition-all hover:scale-[1.01]"
+                        className="w-full gap-1.5 font-semibold"
                       >
                         <Zap className="h-3.5 w-3.5" />
-                        <span>立即预约名额</span>
+                        <span>立即预约</span>
                         <ChevronRight className="h-4 w-4" />
                       </Button>
                     )}
@@ -434,17 +402,17 @@ export default function SlotList() {
       {/* Confirmation Modal */}
       {isMobile ? (
         <Sheet open={openModal} onOpenChange={setOpenModal} side="bottom">
-          <SheetContent className="rounded-t-2xl p-6">
+          <SheetContent className="p-6">
             <SheetHeader>
-              <SheetTitle className="text-lg font-bold font-serif">确认游览预约信息</SheetTitle>
+            <SheetTitle className="text-lg font-semibold">确认游览预约信息</SheetTitle>
               <SheetDescription className="text-xs">请核对您的预约时段与注意事项。</SheetDescription>
             </SheetHeader>
             {modalFormContent}
             <SheetFooter className="gap-2 pt-4">
-              <Button variant="outline" disabled={grabBusy} onClick={() => setOpenModal(false)} className="flex-1 rounded-lg">
+              <Button variant="outline" disabled={grabBusy} onClick={() => setOpenModal(false)} className="flex-1">
                 取消
               </Button>
-              <Button disabled={grabBusy} onClick={handleConfirmGrab} className="flex-1 font-semibold bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg">
+              <Button disabled={grabBusy} onClick={handleConfirmGrab} className="flex-1 font-semibold">
                 {grabBusy ? '抢占名额中…' : '确认抢占预约名额'}
               </Button>
             </SheetFooter>
@@ -454,15 +422,15 @@ export default function SlotList() {
         <Dialog open={openModal} onOpenChange={setOpenModal}>
           <DialogContent className="max-w-md rounded-2xl p-6">
             <DialogHeader>
-              <DialogTitle className="text-lg font-bold font-serif">确认游览预约信息</DialogTitle>
+              <DialogTitle className="text-lg font-semibold">确认游览预约信息</DialogTitle>
               <DialogDescription className="text-xs">请核对您的预约时段与注意事项。</DialogDescription>
             </DialogHeader>
             {modalFormContent}
             <DialogFooter className="gap-3 pt-2">
-              <Button variant="outline" disabled={grabBusy} onClick={() => setOpenModal(false)} className="rounded-lg">
+              <Button variant="outline" disabled={grabBusy} onClick={() => setOpenModal(false)}>
                 取消
               </Button>
-              <Button disabled={grabBusy} onClick={handleConfirmGrab} className="font-semibold bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg">
+              <Button disabled={grabBusy} onClick={handleConfirmGrab} className="font-semibold">
                 {grabBusy ? '抢占名额中…' : '确认抢占预约名额'}
               </Button>
             </DialogFooter>

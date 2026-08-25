@@ -1,131 +1,122 @@
-import { useState, useEffect, useCallback } from 'react'
-import { CalendarCheck, RefreshCw } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { CalendarCheck, QrCode, RefreshCw } from 'lucide-react'
 import { staffApi, type StaffReservationVO } from '@/api/staff'
 import { isApiError } from '@/api/http'
 import { todayInZone } from '@/lib/datetime'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/common/ErrorState'
 import { EmptyState } from '@/components/common/EmptyState'
+import { PageHeader } from '@/components/common/PageHeader'
+import { ReservationStatusBadge } from '@/components/common/StatusBadge'
 
 export default function StaffReservations() {
   const today = todayInZone()
   const [list, setList] = useState<StaffReservationVO[] | null>(null)
-  const [loading, setLoading] = useState<boolean>(true)
-  const [errorMsg, setErrorMsg] = useState<string>('')
-  const [requestId, setRequestId] = useState<string>('')
+  const [loading, setLoading] = useState(true)
+  const [errorMsg, setErrorMsg] = useState('')
+  const [requestId, setRequestId] = useState('')
+  const [filter, setFilter] = useState<'all' | 'waiting' | 'verified' | 'other'>('all')
 
   const load = useCallback(() => {
     setLoading(true)
     setErrorMsg('')
     setRequestId('')
-    staffApi
-      .today()
-      .then((data) => {
-        setList(data)
-        setLoading(false)
-      })
-      .catch((err) => {
-        setLoading(false)
-        if (isApiError(err)) {
-          setErrorMsg(err.message)
-          setRequestId(err.requestId)
-        } else {
-          setErrorMsg('获取今日预约列表失败')
-        }
-      })
+    staffApi.today().then((data) => {
+      setList(data)
+      setLoading(false)
+    }).catch((err) => {
+      setLoading(false)
+      if (isApiError(err)) {
+        setErrorMsg(err.message)
+        setRequestId(err.requestId)
+      } else setErrorMsg('获取今日预约列表失败')
+    })
   }, [])
 
-  useEffect(() => {
-    load()
-  }, [load])
+  useEffect(() => { load() }, [load])
+
+  const filteredList = useMemo(() => (list || []).filter((reservation) => {
+    if (filter === 'all') return true
+    if (filter === 'waiting') return reservation.status === 'PENDING' || reservation.status === 'CONFIRMED'
+    if (filter === 'verified') return reservation.status === 'VERIFIED'
+    return !['PENDING', 'CONFIRMED', 'VERIFIED'].includes(reservation.status)
+  }), [filter, list])
+
+  const counts = useMemo(() => ({
+    all: list?.length || 0,
+    waiting: list?.filter((item) => item.status === 'PENDING' || item.status === 'CONFIRMED').length || 0,
+    verified: list?.filter((item) => item.status === 'VERIFIED').length || 0,
+    other: list?.filter((item) => !['PENDING', 'CONFIRMED', 'VERIFIED'].includes(item.status)).length || 0,
+  }), [list])
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b pb-3">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground font-serif">
-            今日预约列表
-          </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {today} · 查询与核对今日入园预约明细清单
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={load} className="gap-1.5 w-fit">
-          <RefreshCw className="h-4 w-4" />
-          <span>刷新</span>
-        </Button>
-      </div>
+      <PageHeader
+        title="今日预约"
+        description={`${today} · 当日预约与通行状态`}
+        actions={<div className="flex gap-2"><Button variant="outline" onClick={load} className="h-10 gap-2"><RefreshCw className="h-4 w-4" /><span>刷新</span></Button><Button asChild className="h-10 gap-2"><Link to="/staff/verify?tab=scan"><QrCode className="h-4 w-4" />开始扫码</Link></Button></div>}
+      />
 
-      {loading && (
-        <Card className="p-6 space-y-3">
-          <Skeleton className="h-6 w-full" />
-          <Skeleton className="h-6 w-full" />
-          <Skeleton className="h-6 w-full" />
-        </Card>
+      {loading && <Card className="space-y-3 p-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></Card>}
+      {errorMsg && <ErrorState title="加载今日预约失败" message={errorMsg} requestId={requestId} onRetry={load} />}
+
+      {!loading && !errorMsg && list && list.length === 0 && (
+        <Card className="p-4"><EmptyState icon={<CalendarCheck className="h-8 w-8" />} title="今日暂无预约" description="有新预约后会显示在这里。" /></Card>
       )}
 
-      {errorMsg && (
-        <ErrorState title="加载今日预约失败" message={errorMsg} requestId={requestId} onRetry={load} />
-      )}
+      {!loading && !errorMsg && list && list.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex gap-2 overflow-x-auto pb-1" role="group" aria-label="预约状态筛选">
+            <FilterButton active={filter === 'all'} onClick={() => setFilter('all')}>全部 <Count>{counts.all}</Count></FilterButton>
+            <FilterButton active={filter === 'waiting'} onClick={() => setFilter('waiting')}>待入园 <Count>{counts.waiting}</Count></FilterButton>
+            <FilterButton active={filter === 'verified'} onClick={() => setFilter('verified')}>已核销 <Count>{counts.verified}</Count></FilterButton>
+            <FilterButton active={filter === 'other'} onClick={() => setFilter('other')}>其他状态 <Count>{counts.other}</Count></FilterButton>
+          </div>
 
-      {!loading && !errorMsg && list && (
-        <Card className="shadow-2xs border">
+          {filteredList.length === 0 ? <Card className="p-4"><EmptyState icon={<CalendarCheck className="h-8 w-8" />} title="当前筛选没有预约" description="请选择其他状态查看今日预约。" /></Card> : <Card className="overflow-hidden">
+          <div className="flex items-center justify-between border-b px-4 py-3">
+            <span className="text-sm font-medium text-foreground">当前显示 {filteredList.length} 条</span>
+            <span className="text-xs text-muted-foreground">列表不展示游客证件信息</span>
+          </div>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>预约编号</TableHead>
-                <TableHead>场次日期</TableHead>
-                <TableHead>时段</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead>创建时间</TableHead>
+                <TableHead className="whitespace-nowrap">预约编号</TableHead>
+                <TableHead className="whitespace-nowrap">日期</TableHead>
+                <TableHead className="whitespace-nowrap">入园时段</TableHead>
+                <TableHead className="whitespace-nowrap">状态</TableHead>
+                <TableHead className="whitespace-nowrap">创建时间</TableHead>
+                <TableHead className="whitespace-nowrap text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {list.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                    <CalendarCheck className="h-6 w-6 inline mr-2" />
-                    今日暂无预约记录。
-                  </TableCell>
+              {filteredList.map((reservation) => (
+                <TableRow key={reservation.reservationNo}>
+                  <TableCell className="whitespace-nowrap font-mono text-xs font-semibold text-foreground">{reservation.reservationNo}</TableCell>
+                  <TableCell className="whitespace-nowrap font-mono text-xs">{reservation.slotDate}</TableCell>
+                  <TableCell className="whitespace-nowrap font-mono text-xs font-medium">{String(reservation.slotHour).padStart(2, '0')}:00</TableCell>
+                  <TableCell className="whitespace-nowrap"><ReservationStatusBadge status={reservation.status} /></TableCell>
+                  <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">{reservation.createAt}</TableCell>
+                  <TableCell className="whitespace-nowrap text-right">{(reservation.status === 'PENDING' || reservation.status === 'CONFIRMED') ? <Button asChild variant="outline" size="sm"><Link to={`/staff/verify?tab=manual&rno=${encodeURIComponent(reservation.reservationNo)}`}>手工核销</Link></Button> : <span className="text-xs text-muted-foreground">无需操作</span>}</TableCell>
                 </TableRow>
-              ) : (
-                list.map((r) => (
-                  <TableRow key={r.reservationNo}>
-                    <TableCell className="font-mono text-xs font-bold text-foreground">{r.reservationNo}</TableCell>
-                    <TableCell className="font-mono text-xs">{r.slotDate}</TableCell>
-                    <TableCell className="font-mono text-xs">{String(r.slotHour).padStart(2, '0')}:00</TableCell>
-                    <TableCell>
-                      {r.status === 'CONFIRMED' ? (
-                        <Badge variant="success">待入园</Badge>
-                      ) : r.status === 'VERIFIED' ? (
-                        <Badge variant="success">已核销</Badge>
-                      ) : r.status === 'CANCELLED' ? (
-                        <Badge variant="secondary">已取消</Badge>
-                      ) : r.status === 'EXPIRED' ? (
-                        <Badge variant="secondary">已过期</Badge>
-                      ) : r.status === 'PENDING' ? (
-                        <Badge variant="warning">确认中</Badge>
-                      ) : (
-                        <Badge variant="outline">{r.status}</Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{r.createAt}</TableCell>
-                  </TableRow>
-                ))
-              )}
+              ))}
             </TableBody>
           </Table>
-          {list.length === 0 && (
-            <div className="hidden">
-              <EmptyState icon={<CalendarCheck className="h-8 w-8" />} title="" description="" />
-            </div>
-          )}
-        </Card>
+          </Card>}
+        </div>
       )}
     </div>
   )
+}
+
+function FilterButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return <Button type="button" variant={active ? 'default' : 'outline'} onClick={onClick} className="h-10 shrink-0 gap-2">{children}</Button>
+}
+
+function Count({ children }: { children: number }) {
+  return <span className="font-mono text-xs opacity-75">{children}</span>
 }

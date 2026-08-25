@@ -15,6 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/common/ErrorState'
 import { toast } from '@/components/ui/sonner'
 import { RequestIdHint } from '@/components/common/RequestIdHint'
+import { PageHeader } from '@/components/common/PageHeader'
 
 export default function AdminTemplates() {
   const [templates, setTemplates] = useState<SlotTemplate[] | null>(null)
@@ -38,6 +39,7 @@ export default function AdminTemplates() {
   const loadTemplates = () => {
     setLoading(true)
     setErrorMsg('')
+    setRequestId('')
     adminApi
       .listTemplates()
       .then((data) => {
@@ -95,6 +97,9 @@ export default function AdminTemplates() {
     return null
   }
 
+  const bucketBase = bucketCount > 0 ? Math.floor(capacity / bucketCount) : 0
+  const bucketRemainder = bucketCount > 0 ? capacity % bucketCount : 0
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setFormError('')
@@ -151,20 +156,16 @@ export default function AdminTemplates() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b pb-4">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground font-serif">
-            场次模板管理
-          </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            配置定时批处理自动派生每日场次的基础模板规则
-          </p>
-        </div>
-        <Button onClick={handleOpenAdd} className="gap-2 font-semibold">
-          <Plus className="h-4 w-4" />
-          <span>新建场次模板</span>
-        </Button>
-      </div>
+      <PageHeader
+        title="场次模板管理"
+        description="配置自动派生每日场次的基础规则"
+        actions={(
+          <Button size="sm" onClick={handleOpenAdd} className="gap-2">
+            <Plus className="h-4 w-4" />
+            <span>新建模板</span>
+          </Button>
+        )}
+      />
 
       <Alert variant="warning" className="border-amber-300 bg-amber-50">
         <Info className="h-4 w-4 text-amber-700" />
@@ -191,8 +192,8 @@ export default function AdminTemplates() {
       )}
 
       {!loading && !errorMsg && templates && (
-        <Card className="shadow-2xs border">
-          <Table>
+        <div className="overflow-hidden rounded-lg border bg-card">
+          <Table className="min-w-[880px]">
             <TableHeader>
               <TableRow>
                 <TableHead>场次时段</TableHead>
@@ -248,11 +249,11 @@ export default function AdminTemplates() {
               )}
             </TableBody>
           </Table>
-        </Card>
+        </div>
       )}
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-md">
+      <Dialog open={open} onOpenChange={(nextOpen) => { if (!formBusy) setOpen(nextOpen) }}>
+        <DialogContent className="max-h-[calc(100vh-3rem)] max-w-md overflow-y-auto pr-1">
           <DialogHeader>
             <DialogTitle>{editingItem ? '编辑场次模板' : '新建场次模板'}</DialogTitle>
             <DialogDescription>
@@ -323,6 +324,9 @@ export default function AdminTemplates() {
               <p className="text-[11px] text-muted-foreground">
                 分桶数不能大于默认容量。
               </p>
+              <div className="rounded-md border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                当前预览：每桶基础容量 <span className="font-mono font-semibold text-foreground">{bucketBase}</span>，余数 <span className="font-mono font-semibold text-foreground">{bucketRemainder}</span> 桶各多 1 个名额。
+              </div>
             </div>
 
             <div className="space-y-1.5">
@@ -335,8 +339,8 @@ export default function AdminTemplates() {
                 onChange={(e) => setReleaseOffsetMin(Number(e.target.value))}
                 className="font-mono"
               />
-              <div className="rounded bg-muted p-2 text-xs text-muted-foreground font-mono leading-relaxed">
-                💡 <strong>参数解释：</strong> 相对场次日期当天 00:00 的分钟偏移。
+              <div className="rounded-md border bg-muted/50 p-3 text-xs text-muted-foreground leading-relaxed">
+                <strong>参数解释：</strong> 相对场次日期当天 00:00 的分钟偏移。
                 <br />
                 例如: <strong>-840</strong> 表示场次日期前一天 10:00 开放放号；<strong>480</strong> 表示场次当天 08:00 放号。
               </div>
@@ -364,7 +368,7 @@ export default function AdminTemplates() {
               </Alert>
             )}
 
-            <DialogFooter>
+            <DialogFooter className="gap-2">
               <Button type="button" variant="outline" disabled={formBusy} onClick={() => setOpen(false)}>
                 取消
               </Button>

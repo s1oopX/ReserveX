@@ -12,6 +12,9 @@
     "preview": "vite preview",
     "test:auth": "node --experimental-strip-types --test scripts/auth-session.test.mjs",
     "test:http": "node --test scripts/http-timeout.test.mjs",
+    "test:slot-ui": "node --experimental-strip-types --test scripts/slot-ui-state.test.mjs",
+    "test:reservation-result": "node --experimental-strip-types --test scripts/reservation-result-state.test.mjs",
+    "test": "node --experimental-strip-types --test scripts/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx --max-warnings 0"
   },

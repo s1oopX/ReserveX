@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Activity, RefreshCw, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
+import { Activity, RefreshCw, CheckCircle2, XCircle, AlertTriangle, ArrowRight } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { adminApi, type ReleaseMonitorItem } from '@/api/admin'
 import { isApiError } from '@/api/http'
 import { Card } from '@/components/ui/card'
@@ -9,6 +10,7 @@ import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/common/ErrorState'
 import { EmptyState } from '@/components/common/EmptyState'
+import { PageHeader } from '@/components/common/PageHeader'
 
 export default function AdminReleaseMonitor() {
   const [list, setList] = useState<ReleaseMonitorItem[] | null>(null)
@@ -42,25 +44,33 @@ export default function AdminReleaseMonitor() {
   }, [load])
 
   const pending = list?.filter((s) => !s.released) ?? []
-  const abnormal = list?.filter((s) => !s.metaComplete || s.bucketPresent !== s.bucketExpected) ?? []
+  const abnormal = list?.filter((s) => s.released && (!s.metaComplete || s.bucketPresent !== s.bucketExpected)) ?? []
   const released = list?.filter((s) => s.released && s.metaComplete && s.bucketPresent === s.bucketExpected) ?? []
+  const issueCount = pending.length + abnormal.length
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b pb-3">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground font-serif">
-            放号发布监控
-          </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            今日与次日场次的 DB 状态、Redis 元数据完整度与分桶预热状态
-          </p>
+      <PageHeader
+        title="放号发布监控"
+        description="检查今日与次日场次的发布、元数据与分桶状态"
+        actions={(
+          <Button variant="outline" size="sm" onClick={load} disabled={loading} className="gap-1.5">
+            <RefreshCw className="h-4 w-4" />
+            <span>刷新</span>
+          </Button>
+        )}
+      />
+
+      {list && !loading && !errorMsg && list.length > 0 && (
+        <div className={`flex flex-col gap-2 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between ${issueCount ? 'border-amber-300 bg-amber-50/70' : 'border-emerald-200 bg-emerald-50/60'}`}>
+          <div className="flex items-center gap-2 text-sm">
+            {issueCount ? <AlertTriangle className="h-4 w-4 text-amber-700" /> : <CheckCircle2 className="h-4 w-4 text-emerald-700" />}
+            <span className="font-semibold">{issueCount ? `${issueCount} 个场次仍需检查` : '当前场次发布状态正常'}</span>
+            <span className="text-xs text-muted-foreground">已发布且元数据、分桶完整：{released.length}</span>
+          </div>
+          {issueCount > 0 && <Link to="/admin/slots" className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">打开场次日历 <ArrowRight className="h-3.5 w-3.5" /></Link>}
         </div>
-        <Button variant="outline" size="sm" onClick={load} className="gap-1.5 w-fit">
-          <RefreshCw className="h-4 w-4" />
-          <span>刷新</span>
-        </Button>
-      </div>
+      )}
 
       {(loading || errorMsg || !list) && (
         <Card className="p-6 space-y-3">
@@ -69,7 +79,7 @@ export default function AdminReleaseMonitor() {
         </Card>
       )}
 
-      {list && (
+      {list && !loading && !errorMsg && (
         <div className="space-y-6">
           <ReleaseSection title="待发布场次" items={pending} emptyHint="暂无待发布场次" />
           <ReleaseSection title="发布异常（Redis 元数据缺失或分桶不完整）" items={abnormal} emptyHint="暂无异常告警" abnormal />
@@ -88,7 +98,7 @@ function ReleaseSection({ title, items, emptyHint, abnormal }: {
 }) {
   if (items.length === 0) {
     return (
-      <Card className="shadow-2xs border">
+      <section className="overflow-hidden rounded-lg border bg-card">
         <div className="p-4 border-b">
           <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
             {abnormal ? <AlertTriangle className="h-4 w-4 text-amber-600" /> : <Activity className="h-4 w-4 text-primary" />}
@@ -99,11 +109,11 @@ function ReleaseSection({ title, items, emptyHint, abnormal }: {
         <div className="p-6">
           <EmptyState icon={<Activity className="h-8 w-8" />} title={emptyHint} description="" />
         </div>
-      </Card>
+      </section>
     )
   }
   return (
-    <Card className="shadow-2xs border">
+    <section className={abnormal ? 'overflow-hidden rounded-lg border border-warning/60 bg-card' : 'overflow-hidden rounded-lg border bg-card'}>
       <div className="p-4 border-b">
         <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
           {abnormal ? <AlertTriangle className="h-4 w-4 text-amber-600" /> : <Activity className="h-4 w-4 text-primary" />}
@@ -111,7 +121,7 @@ function ReleaseSection({ title, items, emptyHint, abnormal }: {
           <Badge variant="secondary" className="ml-auto">{items.length}</Badge>
         </h2>
       </div>
-      <Table>
+      <Table className="min-w-[920px]">
         <TableHeader>
           <TableRow>
             <TableHead>场次 ID</TableHead>
@@ -121,6 +131,7 @@ function ReleaseSection({ title, items, emptyHint, abnormal }: {
             <TableHead>Redis 元数据</TableHead>
             <TableHead>分桶预热</TableHead>
             <TableHead>版本</TableHead>
+            <TableHead className="text-right">下一步</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -138,26 +149,29 @@ function ReleaseSection({ title, items, emptyHint, abnormal }: {
               <TableCell className="font-mono text-xs">{s.capacity} / {s.redisRemain}</TableCell>
               <TableCell>
                 {s.metaComplete ? (
-                  <span className="inline-flex items-center gap-1 text-xs text-emerald-700 font-medium">
-                    <CheckCircle2 className="h-3.5 w-3.5" /> Complete
+                  <span className="inline-flex items-center gap-1 text-xs text-success-foreground font-medium">
+                    <CheckCircle2 className="h-3.5 w-3.5" /> 完整
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 text-xs text-amber-700 font-medium">
-                    <XCircle className="h-3.5 w-3.5" /> Incomplete
+                    <XCircle className="h-3.5 w-3.5" /> 不完整
                   </span>
                 )}
               </TableCell>
               <TableCell className="font-mono text-xs">
                 {s.bucketPresent}/{s.bucketExpected}
                 {s.bucketPresent !== s.bucketExpected && (
-                  <span className="text-destructive ml-1">⚠</span>
+                  <AlertTriangle className="ml-1 inline h-3.5 w-3.5 text-destructive" />
                 )}
               </TableCell>
               <TableCell className="font-mono text-xs">v{s.version}</TableCell>
+              <TableCell className="text-right">
+                <Link to={`/admin/slots?date=${s.slotDate}`} className="text-xs font-semibold text-primary hover:underline">查看场次</Link>
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
-    </Card>
+    </section>
   )
 }

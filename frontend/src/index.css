@@ -4,7 +4,7 @@
 
 @layer base {
   :root {
-    --background: 210 20% 98%;
+    --background: 210 24% 97%;
     --foreground: 222 47% 11%;
 
     --card: 0 0% 100%;
@@ -13,16 +13,16 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
 
-    --primary: 158 64% 28%;
+    --primary: 161 64% 32%;
     --primary-foreground: 150 20% 98%;
 
-    --secondary: 210 40% 96.1%;
+    --secondary: 210 22% 94%;
     --secondary-foreground: 222 47% 11%;
 
-    --muted: 210 40% 96.1%;
+    --muted: 210 22% 94%;
     --muted-foreground: 215.4 16.3% 46.9%;
 
-    --accent: 210 40% 96.1%;
+    --accent: 161 24% 94%;
     --accent-foreground: 222 47% 11%;
 
     --destructive: 0 72% 51%;
@@ -34,11 +34,11 @@
     --success: 158 64% 32%;
     --success-foreground: 0 0% 100%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 158 64% 28%;
+    --border: 214 24% 88%;
+    --input: 214 24% 84%;
+    --ring: 161 64% 32%;
 
-    --radius: 1rem;
+    --radius: 0.625rem;
   }
 }
 
@@ -48,42 +48,36 @@
   }
   body {
     @apply bg-background text-foreground antialiased selection:bg-emerald-500/20 selection:text-emerald-900;
-    font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    letter-spacing: 0;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
   }
 
   .font-mono {
-    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     font-feature-settings: "tnum" 1, "zero" 1;
+  }
+
+  h1, h2, h3, h4, .font-serif {
+    font-family: "Noto Serif SC", "Songti SC", SimSun, serif;
+    letter-spacing: 0;
+  }
+
+  button, a, input, textarea, select {
+    -webkit-tap-highlight-color: transparent;
   }
 }
 
-/* Master Designer Glass & Card Utilities */
-.designer-glass-panel {
-  background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-}
+@layer components {
+  .app-shell {
+    background: hsl(var(--background));
+  }
 
-.designer-card-elevated {
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.03);
-}
-
-/* Ken Burns Subtle Background Breathing Zoom */
-@keyframes ken-burns {
-  0% { transform: scale(1.02); }
-  50% { transform: scale(1.07); }
-  100% { transform: scale(1.02); }
-}
-.animate-ken-burns {
-  animation: ken-burns 35s ease-in-out infinite alternate;
+  .surface {
+    @apply border bg-card shadow-sm;
+  }
 }
 
 /* Custom Smooth Scrollbar */
@@ -110,4 +104,15 @@
 }
 .animate-scan-laser {
   animation: scan-laser 2.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

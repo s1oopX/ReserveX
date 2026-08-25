@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Calendar, RefreshCw, Database, CheckCircle2, XCircle, PlusCircle } from 'lucide-react'
 import { adminApi, type SlotDetail } from '@/api/admin'
 import { isApiError } from '@/api/http'
@@ -10,10 +11,13 @@ import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/common/ErrorState'
 import { IncreaseCapacityDialog } from './IncreaseCapacityDialog'
+import { PageHeader } from '@/components/common/PageHeader'
 
 export default function AdminSlots() {
   const today = todayInZone()
-  const [date, setDate] = useState<string>(today)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedDate = searchParams.get('date')
+  const [date, setDate] = useState<string>(requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate) ? requestedDate : today)
   const [slots, setSlots] = useState<SlotDetail[] | null>(null)
   const [loading, setLoading] = useState<boolean>(true)
   const [errorMsg, setErrorMsg] = useState<string>('')
@@ -23,6 +27,7 @@ export default function AdminSlots() {
   const loadSlots = useCallback(() => {
     setLoading(true)
     setErrorMsg('')
+    setRequestId('')
     adminApi
       .listSlots(date)
       .then((data) => {
@@ -46,34 +51,29 @@ export default function AdminSlots() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b pb-4">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground font-serif">
-            场次日历与实时状态
-          </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            按日期查询场次放号状态、Redis 元数据状态及分桶概览
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-card border rounded-md px-3 py-1.5 shadow-2xs">
+      <PageHeader
+        title="场次日历"
+        description="按日期查看容量、余量、放号及 Redis 元数据状态"
+        actions={(
+          <div className="flex max-w-full flex-wrap justify-end gap-2">
+          <div className="flex h-8 items-center gap-2 rounded-md border bg-background px-3">
             <Calendar className="h-4 w-4 text-primary" />
             <label htmlFor="admin-slot-date" className="sr-only">选择日期</label>
             <input
               id="admin-slot-date"
               type="date"
               value={date}
-              onChange={(e) => setDate(e.target.value)}
+              onChange={(e) => { setDate(e.target.value); setSearchParams({ date: e.target.value }) }}
               className="bg-transparent text-sm font-medium text-foreground focus:outline-none cursor-pointer"
             />
           </div>
-          <Button variant="outline" size="sm" onClick={loadSlots} className="gap-1.5">
+          <Button variant="outline" size="sm" onClick={loadSlots} disabled={loading} className="gap-1.5">
             <RefreshCw className="h-4 w-4" />
             <span>刷新</span>
           </Button>
-        </div>
-      </div>
+          </div>
+        )}
+      />
 
       {loading && (
         <Card className="p-6 space-y-3">
@@ -93,8 +93,14 @@ export default function AdminSlots() {
       )}
 
       {!loading && !errorMsg && slots && (
-        <Card className="shadow-2xs border">
-          <Table>
+        <>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">已生成场次</p><p className="mt-1 font-mono text-2xl font-bold">{slots.length}</p></div>
+          <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">已放号</p><p className="mt-1 font-mono text-2xl font-bold text-emerald-700">{slots.filter((slot) => slot.released).length}</p></div>
+          <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Redis 元数据缺失</p><p className={`mt-1 font-mono text-2xl font-bold ${slots.filter((slot) => slot.released && slot.metaPresent === false).length ? 'text-amber-700' : 'text-foreground'}`}>{slots.filter((slot) => slot.released && slot.metaPresent === false).length}</p></div>
+        </div>
+        <div className="overflow-hidden rounded-lg border bg-card">
+          <Table className="min-w-[1080px]">
             <TableHeader>
               <TableRow>
                 <TableHead>场次 ID</TableHead>
@@ -141,14 +147,16 @@ export default function AdminSlots() {
                       )}
                     </TableCell>
                     <TableCell>
-                      {slot.metaPresent ? (
+                      {slot.metaPresent === true ? (
                         <span className="inline-flex items-center gap-1 text-xs text-emerald-700 font-medium">
-                          <Database className="h-3.5 w-3.5" /> Normal
+                          <Database className="h-3.5 w-3.5" /> 完整
+                        </span>
+                      ) : slot.metaPresent === false ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-amber-700 font-medium">
+                          <XCircle className="h-3.5 w-3.5" /> 缺失
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-xs text-amber-700 font-medium">
-                          <XCircle className="h-3.5 w-3.5" /> Missing
-                        </span>
+                        <span className="text-xs text-muted-foreground">未返回</span>
                       )}
                     </TableCell>
                     <TableCell className="font-mono text-xs">v{slot.version}</TableCell>
@@ -168,7 +176,8 @@ export default function AdminSlots() {
               )}
             </TableBody>
           </Table>
-        </Card>
+        </div>
+        </>
       )}
 
       {increaseSlot && (

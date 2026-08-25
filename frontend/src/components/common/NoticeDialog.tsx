@@ -108,7 +108,7 @@ export function NoticeDialog({ open, onDecline, onAccept }: NoticeDialogProps) {
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onDecline() }}>
       <DialogContent className="flex max-h-[85vh] sm:max-h-[90vh] flex-col max-w-xl p-0 overflow-hidden shadow-2xl border">
         <DialogHeader className="px-6 pt-5 pb-3 border-b shrink-0 bg-muted/20">
-          <DialogTitle className="text-lg font-bold font-serif text-foreground">
+          <DialogTitle className="text-lg font-semibold text-foreground">
             湿地公园预约须知与规则
           </DialogTitle>
           <DialogDescription className="text-xs mt-1 text-muted-foreground">

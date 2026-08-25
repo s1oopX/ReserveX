@@ -99,26 +99,26 @@ export default function Register() {
 
   return (
     <>
-      <Card className="designer-card-elevated rounded-2xl overflow-hidden shadow-2xl border border-white/80">
-        <CardHeader className="space-y-1 pb-3 pt-5 px-6 border-b border-slate-100">
+      <Card className="overflow-hidden rounded-2xl border-slate-200 bg-white shadow-[0_18px_45px_rgba(18,59,67,0.09)]">
+        <CardHeader className="space-y-2 border-b border-slate-100 px-6 pb-6 pt-8">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-xl font-black font-sans text-slate-900 tracking-tight">预约信息登记</CardTitle>
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200/60">
+            <CardTitle className="font-serif text-3xl font-semibold text-[#123b43]">创建预约账户</CardTitle>
+            <span className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary">
               <ShieldCheck className="h-3 w-3" />
               邮箱归属验证
             </span>
           </div>
-          <CardDescription className="text-xs text-slate-500">
-            登记预约信息；入园时仍需按现场规则核验证件
+          <CardDescription className="text-sm">
+            完成邮箱与实名信息验证后，即可查看和预约开放时段
           </CardDescription>
         </CardHeader>
 
-        <CardContent className="pt-4 px-6 pb-4">
-          <form onSubmit={submit} className="space-y-3">
+        <CardContent className="px-6 pb-6 pt-6">
+          <form onSubmit={submit} className="space-y-4">
             {/* Row 1: Email (Full Width) */}
             <div className="space-y-1">
               <div className="flex justify-between items-center">
-                <Label htmlFor="reg-email" className="text-xs font-semibold text-slate-700">电子邮箱</Label>
+              <Label htmlFor="reg-email">电子邮箱</Label>
                 <span className="text-[11px] text-slate-400">验证码用于确认邮箱归属</span>
               </div>
               <div className="relative">
@@ -127,34 +127,36 @@ export default function Register() {
                   id="reg-email"
                   type="email"
                   required
+                  autoComplete="email"
                   placeholder="name@example.com"
                   value={email}
                   onChange={(e) => {
                     setEmail(e.target.value)
                     setCodeSent(false)
                   }}
-                  className="h-10 pl-9 rounded-xl border-slate-200 bg-slate-50/50 focus:bg-white text-xs font-medium transition-all"
+                  className="h-11 rounded-xl border-slate-200 bg-slate-50/60 pl-9"
                 />
               </div>
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="reg-email-code" className="text-xs font-semibold text-slate-700">邮箱验证码</Label>
+              <Label htmlFor="reg-email-code">邮箱验证码</Label>
               <div className="flex gap-2">
                 <Input
                   id="reg-email-code"
                   type="text"
                   inputMode="numeric"
                   required
+                  autoComplete="one-time-code"
                   pattern="^\d{6}$"
                   maxLength={6}
                   placeholder="6 位验证码"
                   value={emailCode}
                   onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, ''))}
-                  className="h-10 rounded-xl border-slate-200 bg-slate-50/50 focus:bg-white text-xs font-mono"
+                  className="h-11 rounded-xl border-slate-200 bg-slate-50/60 font-mono"
                 />
                 <Button type="button" variant="outline" disabled={sendingCode || !email} onClick={sendCode}
-                  className="h-10 shrink-0 rounded-xl text-xs">
+                  className="h-10 shrink-0 text-xs">
                   {sendingCode ? '发送中…' : codeSent ? '重新发送' : '发送验证码'}
                 </Button>
               </div>
@@ -164,24 +166,25 @@ export default function Register() {
             {/* Row 2: Phone & ID Card (2-Column Grid) */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label htmlFor="reg-phone" className="text-xs font-semibold text-slate-700">手机号码</Label>
+                <Label htmlFor="reg-phone">手机号码</Label>
                 <div className="relative">
                   <Phone className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
                   <Input
                     id="reg-phone"
                     type="tel"
                     required
+                    autoComplete="tel"
                     pattern="^1\d{10}$"
                     placeholder="11位手机号"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
-                    className="h-10 pl-9 rounded-xl border-slate-200 bg-slate-50/50 focus:bg-white text-xs font-medium transition-all"
+                  className="h-11 rounded-xl border-slate-200 bg-slate-50/60 pl-9"
                   />
                 </div>
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="reg-idcard" className="text-xs font-semibold text-slate-700">身份证号</Label>
+                <Label htmlFor="reg-idcard">身份证号</Label>
                 <div className="relative">
                   <IdCard className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
                   <Input
@@ -192,7 +195,7 @@ export default function Register() {
                     placeholder="18位身份证号"
                     value={idCard}
                     onChange={(e) => setIdCard(e.target.value.toUpperCase())}
-                    className="h-10 pl-9 rounded-xl border-slate-200 bg-slate-50/50 focus:bg-white text-xs font-mono transition-all"
+                    className="h-11 rounded-xl border-slate-200 bg-slate-50/60 pl-9 font-mono"
                   />
                 </div>
               </div>
@@ -201,18 +204,19 @@ export default function Register() {
             {/* Row 3: Password & Confirm Password (2-Column Grid) */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label htmlFor="reg-password" className="text-xs font-semibold text-slate-700">设置密码</Label>
+                <Label htmlFor="reg-password">设置密码</Label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
                   <Input
                     id="reg-password"
                     type={showPassword ? 'text' : 'password'}
                     required
+                    autoComplete="new-password"
                     minLength={8}
                     placeholder="至少 8 位"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="h-10 pl-9 pr-8 rounded-xl border-slate-200 bg-slate-50/50 focus:bg-white text-xs font-medium transition-all"
+                    className="h-11 rounded-xl border-slate-200 bg-slate-50/60 pl-9 pr-8"
                   />
                   <button
                     type="button"
@@ -226,18 +230,19 @@ export default function Register() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="reg-confirm" className="text-xs font-semibold text-slate-700">确认密码</Label>
+                <Label htmlFor="reg-confirm">确认密码</Label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
                   <Input
                     id="reg-confirm"
                     type={showPassword ? 'text' : 'password'}
                     required
+                    autoComplete="new-password"
                     minLength={8}
                     placeholder="再次输入"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="h-10 pl-9 rounded-xl border-slate-200 bg-slate-50/50 focus:bg-white text-xs font-medium transition-all"
+                    className="h-11 rounded-xl border-slate-200 bg-slate-50/60 pl-9"
                   />
                 </div>
               </div>
@@ -245,39 +250,37 @@ export default function Register() {
 
             {/* Protocol Trigger */}
             <div className="pt-0.5">
-              <div
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={agreed}
                 onClick={() => setNoticeOpen(true)}
-                className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                className={`flex w-full cursor-pointer items-center gap-2 rounded-xl border p-3 text-left ${
                   agreed
-                    ? 'border-emerald-300 bg-emerald-50/70 text-emerald-950 shadow-xs'
-                    : 'border-slate-200 bg-slate-50/50 hover:bg-slate-100/70 text-slate-600'
+                    ? 'border-primary/30 bg-primary/5 text-foreground'
+                    : 'border-input bg-muted/20 text-muted-foreground hover:bg-muted/40'
                 }`}
               >
-                <input
-                  id="reg-agreed-checkbox"
-                  type="checkbox"
-                  checked={agreed}
-                  readOnly
-                  tabIndex={-1}
-                  className="h-4 w-4 rounded border-slate-300 text-emerald-700 pointer-events-none shrink-0"
-                />
+                <span aria-hidden="true" className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${agreed ? 'border-primary bg-primary' : 'border-slate-300 bg-white'}`}>
+                  {agreed && <span className="h-1.5 w-1.5 rounded-sm bg-white" />}
+                </span>
                 <div className="text-xs leading-tight font-medium flex-1">
-                  <span>已阅读并同意 </span>
-                  <span className="text-emerald-800 underline font-bold hover:text-emerald-900">
+                  <span>我已阅读并同意 </span>
+                  <span className="font-medium text-primary underline hover:text-primary/80">
                     《湿地公园预约须知与规则》
                   </span>
                 </div>
                 {agreed && (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded-full shrink-0">
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
                     <ShieldCheck className="h-3 w-3" />
                     已确认
                   </span>
                 )}
-              </div>
+              </button>
             </div>
 
             {msg && (
-              <Alert variant="destructive" className="border-rose-200 bg-rose-50/70 text-rose-900 py-2 rounded-xl">
+              <Alert variant="destructive" className="py-2">
                 <AlertDescription className="text-xs">
                   <div>{msg}</div>
                   {requestId && <RequestIdHint requestId={requestId} />}
@@ -288,16 +291,16 @@ export default function Register() {
             <Button
               type="submit"
               disabled={busy}
-              className="w-full h-10 rounded-xl bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs shadow-sm transition-all"
+              className="h-12 w-full rounded-xl text-sm font-semibold"
             >
-              {busy ? '正在提交注册…' : '立即注册账号'}
+              {busy ? '正在创建账户…' : '创建预约账户'}
             </Button>
           </form>
         </CardContent>
 
-        <CardFooter className="flex justify-center border-t border-slate-100 py-3 text-xs text-slate-500 bg-slate-50/50">
+        <CardFooter className="flex justify-center border-t border-slate-100 bg-slate-50/60 py-5 text-sm text-muted-foreground">
           已有账号？{' '}
-          <Link to="/login" className="font-bold text-emerald-800 underline-offset-4 hover:underline ml-1">
+          <Link to="/login" className="ml-1 font-medium text-primary underline-offset-4 hover:underline">
             返回登录
           </Link>
         </CardFooter>

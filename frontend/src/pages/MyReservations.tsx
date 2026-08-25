@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
-import { Ticket, QrCode, Eye, XCircle, Calendar } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Ticket, QrCode, Eye, XCircle, Calendar, GitBranch } from 'lucide-react'
 import { reservationApi, type ReservationVO } from '@/api/reservation'
 import { isApiError } from '@/api/http'
 import { Card, CardContent } from '@/components/ui/card'
@@ -12,8 +12,10 @@ import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
 import { AlertDialog } from '@/components/ui/alert-dialog'
 import { toast } from '@/components/ui/sonner'
+import { PageHeader } from '@/components/common/PageHeader'
 
 export default function MyReservations() {
+  const nav = useNavigate()
   const [list, setList] = useState<ReservationVO[] | null>(null)
   const [filter, setFilter] = useState<'all' | 'pending' | 'ended'>('all')
   const [loading, setLoading] = useState<boolean>(true)
@@ -77,30 +79,13 @@ export default function MyReservations() {
   })
 
   return (
-    <div className="space-y-6 font-sans">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-slate-200/80 pb-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-serif">
-            我的预约记录
-          </h1>
-          <p className="text-xs text-slate-500 mt-1">
-            查看与管理您的游览预约凭证
-          </p>
-        </div>
-
-        <Tabs value={filter} onValueChange={(v) => setFilter(v as 'all' | 'pending' | 'ended')}>
-          <TabsList className="bg-slate-100 p-1 rounded-xl">
-            <TabsTrigger value="all" className="rounded-lg text-xs">全部</TabsTrigger>
-            <TabsTrigger value="pending" className="rounded-lg text-xs">待入园</TabsTrigger>
-            <TabsTrigger value="ended" className="rounded-lg text-xs">已结束</TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
+    <div className="mx-auto max-w-4xl space-y-7 font-sans">
+      <PageHeader title="我的预约" description="查看预约状态、凭证和异步确认结果" actions={<Tabs value={filter} onValueChange={(v) => setFilter(v as 'all' | 'pending' | 'ended')}><TabsList><TabsTrigger value="all" className="text-xs">全部</TabsTrigger><TabsTrigger value="pending" className="text-xs">待入园</TabsTrigger><TabsTrigger value="ended" className="text-xs">已结束</TabsTrigger></TabsList></Tabs>} />
 
       {loading && (
         <div className="space-y-4">
           {[1, 2, 3].map((i) => (
-            <Card key={i} className="p-5 space-y-3 rounded-2xl border-slate-200/80">
+            <Card key={i} className="space-y-3 p-5">
               <div className="flex justify-between">
                 <Skeleton className="h-5 w-32" />
                 <Skeleton className="h-5 w-16" />
@@ -124,11 +109,11 @@ export default function MyReservations() {
       {!loading && !errorMsg && filteredList && (
         filteredList.length === 0 ? (
           <EmptyState
-            icon={<Ticket className="h-8 w-8 text-slate-400" />}
+            icon={<Ticket className="h-8 w-8 text-muted-foreground" />}
             title="暂无相关预约记录"
             description="您当前没有符合筛选条件的预约记录。"
             actionLabel="去预约场次"
-            onAction={() => window.location.href = '/'}
+            onAction={() => nav('/slots')}
           />
         ) : (
           <div className="space-y-4">
@@ -137,23 +122,23 @@ export default function MyReservations() {
               const canCancel = item.status === 'CONFIRMED' || item.status === 'PENDING'
 
               return (
-                <Card key={item.reservationNo} className="shadow-xs hover:shadow-md transition-all border border-slate-200/80 rounded-2xl overflow-hidden bg-card">
-                  <CardContent className="p-5 space-y-3.5">
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <Card key={item.reservationNo} className="overflow-hidden rounded-2xl border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+                  <CardContent className="space-y-4 p-5 sm:p-6">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
                       <div className="flex items-center gap-2">
-                        <Calendar className="h-4 w-4 text-emerald-700" />
-                        <span className="font-bold text-slate-900 text-base font-serif">{item.slotDate}</span>
-                        <span className="text-xs text-slate-500 font-mono">
+                        <Calendar className="h-4 w-4 text-primary" />
+                        <span className="font-serif text-xl font-semibold text-[#123b43]">{item.slotDate}</span>
+                        <span className="font-mono text-xs text-muted-foreground">
                           ({String(item.slotHour).padStart(2, '0')}:00 场次)
                         </span>
                       </div>
                       <ReservationStatusBadge status={item.status} />
                     </div>
 
-                    <div className="grid gap-1.5 text-xs text-slate-500 font-mono">
+                    <div className="grid gap-2.5 font-mono text-xs text-muted-foreground">
                       <div className="flex justify-between items-center">
                         <span>预约单号</span>
-                        <span className="font-semibold text-slate-800 bg-slate-100 px-2 py-0.5 rounded text-[11.5px]">{item.reservationNo}</span>
+                        <span className="rounded bg-muted px-2 py-0.5 text-[11.5px] font-semibold text-foreground">{item.reservationNo}</span>
                       </div>
                       <div className="flex justify-between items-center">
                         <span>提交时间</span>
@@ -162,13 +147,18 @@ export default function MyReservations() {
                       {item.verifyTime && (
                         <div className="flex justify-between items-center">
                           <span>核销时间</span>
-                          <span className="text-emerald-800 font-semibold">{item.verifyTime}</span>
+                          <span className="font-semibold text-primary">{item.verifyTime}</span>
                         </div>
                       )}
                     </div>
 
-                    <div className="pt-2 flex flex-wrap items-center gap-2 justify-end border-t border-slate-100">
-                      <Button asChild variant="outline" size="sm" className="gap-1.5 text-xs rounded-lg border-slate-200">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <GitBranch className="h-3.5 w-3.5 text-primary" />
+                        <span>{item.status === 'PENDING' ? 'Redis 预占，等待持久化' : '状态已写入预约记录'}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Button asChild variant="outline" size="sm" className="gap-1.5 text-xs">
                         <Link to={`/reservation/${item.reservationNo}`}>
                           <Eye className="h-3.5 w-3.5 text-slate-500" />
                           <span>详情</span>
@@ -176,7 +166,7 @@ export default function MyReservations() {
                       </Button>
 
                       {canQr && (
-                        <Button asChild size="sm" className="gap-1.5 text-xs font-semibold bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg shadow-xs">
+                        <Button asChild size="sm" className="gap-1.5 text-xs font-semibold">
                           <Link to={`/reservation/${item.reservationNo}/qr`}>
                             <QrCode className="h-3.5 w-3.5" />
                             <span>入园二维码</span>
@@ -189,12 +179,13 @@ export default function MyReservations() {
                           variant="outline"
                           size="sm"
                           onClick={() => setCancelTarget(item)}
-                          className="gap-1.5 text-xs text-rose-600 hover:bg-rose-50 border-rose-200 rounded-lg"
+                          className="gap-1.5 border-destructive/30 text-xs text-destructive hover:bg-destructive/10"
                         >
                           <XCircle className="h-3.5 w-3.5" />
                           <span>取消预约</span>
                         </Button>
                       )}
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -215,9 +206,9 @@ export default function MyReservations() {
         onConfirm={handleConfirmCancel}
         description={
           cancelTarget ? (
-            <div className="space-y-2 text-sm text-slate-800 mt-2">
+            <div className="mt-2 space-y-2 text-sm text-foreground">
               <p>您正在申请取消预约单号为 <strong className="font-mono">{cancelTarget.reservationNo}</strong> 的预约。</p>
-              <div className="rounded-xl border border-rose-200 bg-rose-50/70 p-3 text-xs text-rose-900 space-y-1 font-medium">
+              <div className="space-y-1 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs font-medium text-destructive">
                 <div>⚠️ 取消须知：</div>
                 <div>1. 名额取消后不可恢复，且不会返还至名额池中；</div>
                 <div>2. 您今天将无法重新提交任何场次的预约；</div>

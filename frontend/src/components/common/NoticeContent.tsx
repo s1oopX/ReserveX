@@ -38,7 +38,7 @@ export function NoticeContent() {
     <div className="space-y-5 text-sm text-foreground leading-relaxed font-sans select-text">
       {/* Preamble with clean left border accent */}
       <div className="border-l-2 border-primary/60 pl-3 py-0.5 text-xs text-muted-foreground font-medium leading-relaxed">
-        为保障景区秩序、游览安全及生态保护，游客在进行名额预约前，请认真阅读并充分理解以下官方协议条款。
+        为保障园区秩序、游览安全及生态保护，游客在进行名额预约前，请认真阅读并充分理解以下预约规则。
       </div>
 
       {/* Critical Warning Callout - Pure text with left red border accent */}

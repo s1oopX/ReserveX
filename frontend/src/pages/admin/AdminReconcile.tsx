@@ -13,6 +13,8 @@ import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/common/ErrorState'
+import { PageHeader } from '@/components/common/PageHeader'
+import { AlertDialog } from '@/components/ui/alert-dialog'
 
 export default function AdminReconcile() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -26,6 +28,11 @@ export default function AdminReconcile() {
   const [stuckList, setStuckList] = useState<StuckItem[] | null>(null)
   const [deadLetters, setDeadLetters] = useState<DeadLetterItem[] | null>(null)
   const [acting, setActing] = useState<string>('')
+  const [confirmAction, setConfirmAction] = useState<
+    | { kind: 'rollback'; id: Id; label: string }
+    | { kind: 'replay'; id: string; label: string }
+    | null
+  >(null)
 
   const [loading, setLoading] = useState<boolean>(true)
   const [errorMsg, setErrorMsg] = useState<string>('')
@@ -112,9 +119,9 @@ export default function AdminReconcile() {
     setActing(key)
     adminApi
       .reconcileAction(type, id)
-      .then((affected) => {
+      .then(() => {
         setActing('')
-        toast.success(`已回滚 (受影响 ${affected})`, '处置完成')
+        toast.success('卡单已完成回滚处置', '处置完成')
         loadData()
       })
       .catch((err) => {
@@ -137,22 +144,26 @@ export default function AdminReconcile() {
       })
   }
 
+  const confirmPendingAction = () => {
+    if (!confirmAction) return
+    const action = confirmAction
+    setConfirmAction(null)
+    if (action.kind === 'rollback') doAction('stuck', action.id, 'rollback')
+    else replayDeadLetter(action.id)
+  }
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b pb-4">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground font-serif">
-            对账中心与对齐控制
-          </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            监控 Redis 与 DB 差异及卡单人工处置
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={loadData} className="gap-1.5">
-          <RefreshCw className="h-4 w-4" />
-          <span>刷新此 Tab</span>
-        </Button>
-      </div>
+      <PageHeader
+        title="对账中心"
+        description="监控 Redis 与 DB 差异，并处置卡单和死信"
+        actions={(
+          <Button variant="outline" size="sm" onClick={loadData} disabled={loading || Boolean(acting)} className="gap-1.5">
+            <RefreshCw className="h-4 w-4" />
+            <span>刷新</span>
+          </Button>
+        )}
+      />
 
       <Alert variant="warning" className="border-amber-300 bg-amber-50">
         <Info className="h-4 w-4 text-amber-700" />
@@ -168,11 +179,11 @@ export default function AdminReconcile() {
           setSearchParams({ tab: v })
         }}
       >
-        <TabsList className="w-full justify-start">
-          <TabsTrigger value="diff">库存差异记录</TabsTrigger>
-          <TabsTrigger value="latest">最新全量对账日志</TabsTrigger>
-          <TabsTrigger value="stuck">卡单列表 (stuck)</TabsTrigger>
-          <TabsTrigger value="dlq">死信消息</TabsTrigger>
+        <TabsList className="w-full justify-start overflow-x-auto">
+          <TabsTrigger value="diff" disabled={Boolean(acting)}>当前差异</TabsTrigger>
+          <TabsTrigger value="latest" disabled={Boolean(acting)}>最近对账</TabsTrigger>
+          <TabsTrigger value="stuck" disabled={Boolean(acting)}>卡单处置</TabsTrigger>
+          <TabsTrigger value="dlq" disabled={Boolean(acting)}>死信处置</TabsTrigger>
         </TabsList>
 
         <TabsContent value="diff" className="mt-4">
@@ -182,7 +193,7 @@ export default function AdminReconcile() {
             requestId={requestId}
             onRetry={loadData}
           >
-            <Table>
+            <Table className="min-w-[860px]">
               <TableHeader>
                 <TableRow>
                   <TableRowDiffHeaders />
@@ -193,7 +204,7 @@ export default function AdminReconcile() {
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                       <CheckCircle2 className="h-6 w-6 text-emerald-600 inline mr-2" />
-                      当前无库存差异，全园 Redis 与 DB 账目完美一致。
+                      当前查询范围内未发现库存差异。
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -213,7 +224,7 @@ export default function AdminReconcile() {
             requestId={requestId}
             onRetry={loadData}
           >
-            <Table>
+            <Table className="min-w-[860px]">
               <TableHeader>
                 <TableRow>
                   <TableRowDiffHeaders />
@@ -243,7 +254,7 @@ export default function AdminReconcile() {
             requestId={requestId}
             onRetry={loadData}
           >
-            <Table>
+            <Table className="min-w-[980px]">
               <TableHeader>
                 <TableRow>
                   <TableHead>预约编号 (rno)</TableHead>
@@ -289,8 +300,8 @@ export default function AdminReconcile() {
                       <TableCell className="text-right">
                         <div className="flex gap-1 justify-end">
                           <Button size="sm" variant="outline" className="text-xs"
-                            disabled={(item.status !== 0 && item.status !== 4) || acting === `rollback-${item.reservationNo}`}
-                            onClick={() => doAction('stuck', item.reservationNo, 'rollback')}>
+                            disabled={Boolean(acting) || (item.status !== 0 && item.status !== 4)}
+                            onClick={() => setConfirmAction({ kind: 'rollback', id: item.reservationNo, label: item.reservationNo })}>
                             {acting === `rollback-${item.reservationNo}` ? '...' : item.status === 4 ? '重试回滚' : '人工回滚'}
                           </Button>
                         </div>
@@ -310,7 +321,7 @@ export default function AdminReconcile() {
             requestId={requestId}
             onRetry={loadData}
           >
-            <Table>
+            <Table className="min-w-[920px]">
               <TableHeader>
                 <TableRow>
                   <TableHead>消息 ID</TableHead>
@@ -344,8 +355,8 @@ export default function AdminReconcile() {
                     <TableCell className="font-mono text-xs">{item.capturedAt}</TableCell>
                     <TableCell className="text-right">
                       <Button size="sm" variant="outline" className="text-xs"
-                        disabled={item.status === 'REPLAYED' || acting === `replay-${item.messageId}`}
-                        onClick={() => replayDeadLetter(item.messageId)}>
+                        disabled={Boolean(acting) || item.status === 'REPLAYED'}
+                        onClick={() => setConfirmAction({ kind: 'replay', id: item.messageId, label: item.messageId })}>
                         {acting === `replay-${item.messageId}` ? '...' : '重放'}
                       </Button>
                     </TableCell>
@@ -357,6 +368,19 @@ export default function AdminReconcile() {
         </TabsContent>
 
       </Tabs>
+
+      <AlertDialog
+        open={confirmAction !== null}
+        onOpenChange={(open) => { if (!open && !acting) setConfirmAction(null) }}
+        title={confirmAction?.kind === 'rollback' ? '确认人工回滚卡单？' : '确认重放死信消息？'}
+        description={confirmAction?.kind === 'rollback'
+          ? `预约 ${confirmAction.label} 将进入回滚流程，可能释放预占并改变库存状态。仅在确认数据库未成功落库后执行。`
+          : `消息 ${confirmAction?.label ?? ''} 将再次投递到原业务 Topic，消费者会按幂等逻辑重新处理。`}
+        confirmText={confirmAction?.kind === 'rollback' ? '确认回滚' : '确认重放'}
+        variant={confirmAction?.kind === 'rollback' ? 'destructive' : 'default'}
+        busy={Boolean(acting)}
+        onConfirm={confirmPendingAction}
+      />
     </div>
   )
 }
@@ -434,5 +458,5 @@ function ReconcileTableShell({
     )
   }
 
-  return <Card className="shadow-2xs border">{children}</Card>
+  return <div className="overflow-hidden rounded-lg border bg-card">{children}</div>
 }

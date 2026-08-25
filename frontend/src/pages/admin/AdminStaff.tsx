@@ -8,10 +8,10 @@ import { Badge } from '@/components/ui/badge'
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/common/ErrorState'
-import { EmptyState } from '@/components/common/EmptyState'
 import { AlertDialog } from '@/components/ui/alert-dialog'
 import { toast } from '@/components/ui/sonner'
 import { CreateStaffDialog } from './CreateStaffDialog'
+import { PageHeader } from '@/components/common/PageHeader'
 
 export default function AdminStaff() {
   const [list, setList] = useState<StaffAccount[] | null>(null)
@@ -65,26 +65,22 @@ export default function AdminStaff() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b pb-4">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground font-serif">
-            工作人员账号管理
-          </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            配置与管理入口核销人员 STAFF 账号（ADMIN 账号只能由 seed/bootstrap 产生）
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={load} className="gap-1.5">
-            <RefreshCw className="h-4 w-4" />
-            <span>刷新</span>
-          </Button>
-          <Button className="gap-2 font-semibold" onClick={() => setCreating(true)}>
-            <Plus className="h-4 w-4" />
-            <span>新建 STAFF 账号</span>
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="工作人员账号"
+        description="管理入口核销人员 STAFF 账号；ADMIN 账号由系统初始化"
+        actions={(
+          <div className="flex max-w-full flex-wrap justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={load} disabled={loading || changing} className="gap-1.5">
+              <RefreshCw className="h-4 w-4" />
+              <span>刷新</span>
+            </Button>
+            <Button size="sm" className="gap-2" onClick={() => setCreating(true)}>
+              <Plus className="h-4 w-4" />
+              <span>新建工作人员</span>
+            </Button>
+          </div>
+        )}
+      />
 
       {loading && (
         <Card className="p-6 space-y-3">
@@ -99,14 +95,14 @@ export default function AdminStaff() {
       )}
 
       {!loading && !errorMsg && list && (
-        <Card className="shadow-2xs border">
-          <Table>
+        <div className="overflow-hidden rounded-lg border bg-card">
+          <Table className="min-w-[880px]">
             <TableHeader>
               <TableRow>
                 <TableHead>用户 ID</TableHead>
                 <TableHead>邮箱</TableHead>
                 <TableHead>手机号</TableHead>
-                <TableHead>证件号</TableHead>
+                <TableHead>证件号（脱敏）</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>创建时间</TableHead>
                 <TableHead className="text-right">操作</TableHead>
@@ -153,10 +149,7 @@ export default function AdminStaff() {
               )}
             </TableBody>
           </Table>
-          {list.length === 0 && (
-            <div className="hidden"><EmptyState icon={<Users className="h-8 w-8" />} title="" description="" /></div>
-          )}
-        </Card>
+        </div>
       )}
 
       {creating && (

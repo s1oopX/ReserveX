@@ -44,34 +44,37 @@ export function IncreaseCapacityDialog({
   }
 
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+    <Dialog open onOpenChange={(o) => { if (!o && !submitting) onClose() }}>
       <DialogHeader>
         <DialogTitle>增容场次</DialogTitle>
         <DialogDescription>
           {slot.slotDate} {String(slot.slotHour).padStart(2, '0')}:00 · 当前容量 {slot.capacity} · 版本 v{slot.version}
           <br />
-          增容只增不减(已被抢走的名额无法回收),DB 与 Redis 桶余量将同步增加。
+          增容只增不减（已被抢走的名额无法回收），DB 与 Redis 桶余量将同步增加。
         </DialogDescription>
       </DialogHeader>
-      <div className="py-4 space-y-2">
-        <label className="text-sm font-medium text-foreground">增容数量</label>
-        <Input
-          type="number"
-          min={1}
-          value={delta}
-          onChange={(e) => setDelta(e.target.value)}
-          placeholder="输入正整数,如 5"
-          autoFocus
-        />
-        {errorMsg && <p className="text-xs text-destructive">{errorMsg}</p>}
-      </div>
-      <DialogFooter>
-        <Button variant="outline" onClick={onClose} disabled={submitting}>取消</Button>
-        <Button onClick={submit} disabled={submitting}>
-          {submitting ? '提交中...' : '确认增容'}
-        </Button>
-      </DialogFooter>
-      <DialogClose onClick={onClose} />
+      <form onSubmit={(e) => { e.preventDefault(); submit() }}>
+        <div className="py-4 space-y-2">
+          <label htmlFor="capacity-delta" className="text-sm font-medium text-foreground">增容数量</label>
+          <Input
+            id="capacity-delta"
+            type="number"
+            min={1}
+            value={delta}
+            onChange={(e) => setDelta(e.target.value)}
+            placeholder="输入正整数，如 5"
+            autoFocus
+          />
+          {errorMsg && <p role="alert" className="text-sm text-destructive">{errorMsg}</p>}
+        </div>
+        <DialogFooter className="gap-2">
+          <Button type="button" variant="outline" onClick={onClose} disabled={submitting}>取消</Button>
+          <Button type="submit" disabled={submitting}>
+            {submitting ? '提交中…' : '确认增容'}
+          </Button>
+        </DialogFooter>
+      </form>
+      {!submitting && <DialogClose onClick={onClose} />}
     </Dialog>
   )
 }

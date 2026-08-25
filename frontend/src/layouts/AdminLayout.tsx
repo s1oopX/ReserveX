@@ -28,13 +28,13 @@ export function AdminLayout() {
   }
 
   const menuItems = [
-    { path: '/admin/dashboard', label: '数据驾驶舱', icon: LayoutDashboard },
+    { path: '/admin/dashboard', label: '运行概览', icon: LayoutDashboard },
     { path: '/admin/templates', label: '场次模板', icon: Clock },
     { path: '/admin/slots', label: '场次日历', icon: CalendarDays },
     { path: '/admin/release-monitor', label: '发布监控', icon: Activity },
     { path: '/admin/reservations', label: '预约管理', icon: TicketCheck },
-    { path: '/admin/reconcile', label: '对账中心', icon: Scale },
-    { path: '/admin/staff', label: '员工管理', icon: Users },
+    { path: '/admin/reconcile', label: '异常处置', icon: Scale },
+    { path: '/admin/staff', label: '工作人员', icon: Users },
     { path: '/staff/verify', label: '核销工作台', icon: QrCode },
   ]
 
@@ -43,12 +43,15 @@ export function AdminLayout() {
   }
 
   return (
-    <div className="min-h-screen flex bg-background">
-      <aside className="w-64 border-r bg-card flex flex-col shrink-0">
-        <div className="p-6 border-b">
+    <div className="app-shell flex min-h-screen">
+      <aside className="hidden w-64 border-r border-slate-200/80 bg-card lg:flex flex-col shrink-0">
+        <div className="px-5 py-5 border-b">
           <AppLogo subtitle />
+          <p className="mt-4 text-xs font-medium text-muted-foreground">
+            预约运行与异常处置
+          </p>
         </div>
-        <nav className="flex-1 p-4 space-y-1.5 overflow-y-auto">
+        <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto" aria-label="管理端主导航">
           {menuItems.map((item) => {
             const Icon = item.icon
             const active = location.pathname === item.path
@@ -56,8 +59,9 @@ export function AdminLayout() {
               <Link
                 key={item.path}
                 to={item.path}
+                aria-current={active ? 'page' : undefined}
                 className={cn(
-                  'flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-colors group',
+                  'flex items-center gap-3 rounded-lg px-3.5 py-3 text-sm font-medium transition-colors group',
                   active
                     ? 'bg-primary text-primary-foreground font-semibold shadow-xs'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
@@ -70,25 +74,20 @@ export function AdminLayout() {
             )
           })}
         </nav>
-        <div className="p-4 border-t text-xs text-muted-foreground">
-          ReserveX Admin v1.0
+        <div className="px-4 py-3 border-t text-xs text-muted-foreground">
+          ReserveX · 管理端
         </div>
       </aside>
 
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 border-b bg-card px-8 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
-            <h1 className="text-lg font-bold tracking-tight text-foreground">
-              {currentItem.label}
-            </h1>
-            <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 border-emerald-300">
-              超级管理员
-            </Badge>
+        <header className="h-[72px] border-b border-slate-200/80 bg-card px-4 sm:px-6 lg:px-8 flex items-center justify-between shrink-0">
+          <div className="flex min-w-0 items-center gap-2 text-sm">
+            <span className="hidden text-muted-foreground sm:inline">运营管理</span>
+            <ChevronRight className="hidden h-4 w-4 text-muted-foreground sm:block" />
+            <span className="truncate font-semibold text-[#123b43]">{currentItem.label}</span>
+            <Badge variant="secondary" className="hidden sm:inline-flex">管理员</Badge>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-xs text-muted-foreground font-mono">
-              Role: ADMIN
-            </span>
             <Button
               variant="outline"
               size="sm"
@@ -97,12 +96,35 @@ export function AdminLayout() {
               aria-label="退出登录"
             >
               <LogOut className="h-4 w-4" />
-              <span>退出登录</span>
+              <span className="hidden sm:inline">退出登录</span>
             </Button>
           </div>
         </header>
 
-        <main className="flex-1 p-8 overflow-y-auto">
+        <nav className="flex shrink-0 snap-x gap-1 overflow-x-auto border-b bg-card px-3 py-2 lg:hidden" aria-label="管理端导航">
+          {menuItems.map((item) => {
+            const Icon = item.icon
+            const active = location.pathname === item.path
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                aria-current={active ? 'page' : undefined}
+                className={cn(
+                  'flex shrink-0 snap-start items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors',
+                  active
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                )}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {item.label}
+              </Link>
+            )
+          })}
+        </nav>
+
+        <main className="flex-1 overflow-y-auto p-5 sm:p-7 lg:p-9">
           <Outlet />
         </main>
       </div>

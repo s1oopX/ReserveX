@@ -11,8 +11,10 @@ import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
+import { PageHeader } from '@/components/common/PageHeader'
 
 type StatusFilter = '' | 'CONFIRMED' | 'VERIFIED' | 'CANCELLED' | 'EXPIRED'
+type ReservationQuery = { rno?: string; slotDate?: string; status?: StatusFilter }
 
 export default function AdminReservations() {
   const [list, setList] = useState<AdminReservationVO[] | null>(null)
@@ -25,6 +27,7 @@ export default function AdminReservations() {
   const [rno, setRno] = useState<string>('')
   const [slotDate, setSlotDate] = useState<string>('')
   const [status, setStatus] = useState<StatusFilter>('')
+  const [query, setQuery] = useState<ReservationQuery>({})
 
   const load = useCallback((cursor?: string) => {
     const append = Boolean(cursor)
@@ -33,9 +36,7 @@ export default function AdminReservations() {
     setRequestId('')
     adminApi
       .listReservations({
-        rno: rno.trim() || undefined,
-        slotDate: slotDate || undefined,
-        status: status || undefined,
+        ...query,
         cursor,
         size: 100,
       })
@@ -54,7 +55,7 @@ export default function AdminReservations() {
           setErrorMsg('获取全园预约列表失败')
         }
       })
-  }, [rno, slotDate, status])
+  }, [query])
 
   useEffect(() => {
     load()
@@ -62,23 +63,25 @@ export default function AdminReservations() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b pb-3">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground font-serif">
-            全园预约明细管理
-          </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            查询全园游客预约记录、追踪状态时间线与核销日志(跨分库广播)
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => load()} className="gap-1.5 w-fit">
-          <RefreshCw className="h-4 w-4" />
-          <span>刷新</span>
-        </Button>
-      </div>
+      <PageHeader
+        title="全园预约查询"
+        description="跨分库查询游客预约、状态与核销记录"
+        actions={(
+          <Button variant="outline" size="sm" onClick={() => load()} disabled={loading} className="gap-1.5">
+            <RefreshCw className="h-4 w-4" />
+            <span>刷新</span>
+          </Button>
+        )}
+      />
 
-      <Card className="shadow-2xs border">
-        <div className="p-4 flex flex-wrap items-center gap-3">
+      <div className="rounded-lg border bg-card">
+        <form
+          className="p-4 flex flex-wrap items-center gap-3"
+          onSubmit={(event) => {
+            event.preventDefault()
+            setQuery({ rno: rno.trim() || undefined, slotDate: slotDate || undefined, status: status || undefined })
+          }}
+        >
           <div className="flex-1 min-w-[200px]">
             <Input
               placeholder="输入预约编号 (rno)..."
@@ -86,7 +89,7 @@ export default function AdminReservations() {
               onChange={(e) => setRno(e.target.value)}
             />
           </div>
-          <div className="w-44">
+          <div className="w-full sm:w-44">
             <Input
               type="date"
               value={slotDate}
@@ -94,7 +97,7 @@ export default function AdminReservations() {
               placeholder="场次日期"
             />
           </div>
-          <div className="w-40">
+          <div className="w-full sm:w-40">
             <Select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
               <option value="">全部状态</option>
               <option value="CONFIRMED">待入园</option>
@@ -103,12 +106,12 @@ export default function AdminReservations() {
               <option value="EXPIRED">已过期</option>
             </Select>
           </div>
-          <Button className="gap-1.5" onClick={() => load()} disabled={loading}>
+          <Button type="submit" className="w-full gap-1.5 sm:w-auto" disabled={loading}>
             <Search className="h-4 w-4" />
             <span>查询</span>
           </Button>
-        </div>
-      </Card>
+        </form>
+      </div>
 
       {loading && (
         <Card className="p-6 space-y-3">
@@ -130,14 +133,8 @@ export default function AdminReservations() {
             description="调整筛选条件后重新查询。"
           />
         ) : (
-          <div className="space-y-3">
-          {hasMore && (
-            <Button variant="outline" size="sm" onClick={() => nextCursor && load(nextCursor)} disabled={loading}>
-              加载更多
-            </Button>
-          )}
-          <Card className="shadow-2xs border">
-            <Table>
+          <div className="overflow-hidden rounded-lg border bg-card">
+            <Table className="min-w-[1040px]">
               <TableHeader>
                 <TableRow>
                   <TableHead>预约编号</TableHead>
@@ -177,7 +174,13 @@ export default function AdminReservations() {
                 ))}
               </TableBody>
             </Table>
-          </Card>
+            {hasMore && (
+              <div className="flex justify-center border-t p-3">
+                <Button variant="outline" size="sm" onClick={() => nextCursor && load(nextCursor)} disabled={loading}>
+                  加载更多
+                </Button>
+              </div>
+            )}
           </div>
         )
       )}
