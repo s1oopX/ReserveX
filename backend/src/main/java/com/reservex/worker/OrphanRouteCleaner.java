@@ -87,7 +87,9 @@ public class OrphanRouteCleaner {
         this.registrationOutboxes = registrationOutboxes;
     }
 
-    @Scheduled(cron = "${reservex.reconcile.crons.orphan-route:0 0 7 * * ?}")
+    // 默认值必须与 yml 的 orphan-route 同频(每小时第 7 分)。写成 "0 0 7 * * ?"
+    // 会在 yml 缺该键时把频率从每天 24 次静默降到 1 次 —— 孤儿 route 多压 23 小时。
+    @Scheduled(cron = "${reservex.reconcile.crons.orphan-route:0 7 * * * ?}")
     @Async("reconcileExecutor")
     public void clean() {
         LocalDateTime cutoff = time.now().minusMinutes(props.getReconcile().getOrphanRouteMinAgeMin());
