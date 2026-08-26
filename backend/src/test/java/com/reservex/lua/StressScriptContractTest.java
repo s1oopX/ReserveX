@@ -75,6 +75,37 @@ class StressScriptContractTest {
                 .contains("total_reused > 0");
     }
 
+    /**
+     * docs/09 §二 曾贴着一份更早的简化脚本副本,而那份副本教的做法与真脚本相反:
+     * {@code '{"slotId": 101}'} 把 Snowflake 写成 JSON 数字(真脚本第 61 行的注释
+     * 专门讲了这个精度坑)、`math.random` 取 token(正是 PR #1 修掉的那个 bug)、
+     * 命令行还漏了 token 池参数所以根本跑不起来。
+     *
+     * <p>副本必然漂移,而这里漂移掉的恰好是 §三 的底线两条。所以 §二 只留指针。
+     */
+    @Test
+    void docsPointAtTheScriptInsteadOfCarryingAStaleCopy() throws IOException {
+        String doc = Files.readString(repoFile("docs", "09-压测与验收.md"), StandardCharsets.UTF_8);
+        int start = doc.indexOf("## 二、压测脚本");
+        int end = doc.indexOf("## 三、");
+        assertThat(start).as("docs/09 找不到 §二").isGreaterThan(-1);
+        assertThat(end).as("docs/09 找不到 §三").isGreaterThan(start);
+        String section = doc.substring(start, end);
+
+        assertThat(section)
+                .as("§二 必须指向真脚本")
+                .contains("stress-test/scripts/grab.lua");
+        assertThat(section)
+                .as("Snowflake 写成 JSON 数字会丢精度 —— 真脚本刻意用字符串")
+                .doesNotContain("\"slotId\": 101");
+        assertThat(section)
+                .as("math.random 取 token 是 PR #1 修掉的 bug,不能在文档里复活")
+                .doesNotContain("math.random");
+        assertThat(section)
+                .as("wrk2 不给 -R 会因协同遗漏让 p99 失真")
+                .contains("-R");
+    }
+
     /** 取出某个顶层 {@code function name(...)} 到其配平 {@code end} 之间的正文。 */
     private String functionBody(String name) throws IOException {
         String script = Files.readString(script(), StandardCharsets.UTF_8);
@@ -88,14 +119,21 @@ class StressScriptContractTest {
     }
 
     private static Path script() {
+        return repoFile("stress-test", "scripts", "grab.lua");
+    }
+
+    private static Path repoFile(String... parts) {
         Path current = Path.of("").toAbsolutePath();
         while (current != null) {
-            Path candidate = current.resolve("stress-test").resolve("scripts").resolve("grab.lua");
+            Path candidate = current;
+            for (String part : parts) {
+                candidate = candidate.resolve(part);
+            }
             if (Files.isRegularFile(candidate)) {
                 return candidate;
             }
             current = current.getParent();
         }
-        throw new AssertionError("repository file not found: stress-test/scripts/grab.lua");
+        throw new AssertionError("repository file not found: " + String.join("/", parts));
     }
 }
