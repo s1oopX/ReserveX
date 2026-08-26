@@ -1,9 +1,47 @@
+<div align="center">
+
 # ReserveX
 
-湿地公园参观预约系统。库存扣减在 Redis 侧原子完成,主表由消息异步落库,一致性由补偿与四类
-对账收口。三数据源分库分表,单进程模块化单体。
+**湿地公园参观预约系统**
 
-Spring Boot 3.5 / Java 21 · Redis 7 · MySQL 8 · RocketMQ 5.5 · ShardingSphere 5.5 · React 18
+库存扣减在 Redis 侧原子完成,主表由消息异步落库,一致性由补偿与四类对账收口。<br>
+三数据源分库分表,单进程模块化单体。
+
+*A reservation system for a capacity-constrained wetland park — Redis-side atomic
+stock decrement, asynchronous persistence via MQ, consistency closed by
+compensation and four reconciliation jobs.*
+
+[![CI](https://github.com/s1oopX/ReserveX/actions/workflows/ci.yml/badge.svg)](https://github.com/s1oopX/ReserveX/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://openjdk.org/projects/jdk/21/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5-6DB33F.svg)](https://spring.io/projects/spring-boot)
+[![Tests](https://img.shields.io/badge/tests-221%20passing-brightgreen.svg)](#七工程验证)
+
+</div>
+
+## 技术栈
+
+| 层 | 组件 |
+|---|---|
+| 应用 | Spring Boot 3.5 · Java 21 · MyBatis-Plus · Sa-Token |
+| 存储 | MySQL 8(三数据源)· ShardingSphere 5.5 · Redis 7 + Lua |
+| 消息 | RocketMQ 5.5(3 业务 topic + 3 DLQ) |
+| 前端 | React 18 · Vite · TypeScript · Tailwind |
+| 边缘 | Caddy(静态托管 + 反代 + `/actuator` 屏蔽) |
+| 可观测 | Prometheus · Alertmanager · Loki · Alloy · Grafana |
+
+## 目录
+
+- [一、落地场景](#一落地场景)
+- [二、关键决策一览](#二关键决策一览)
+- [三、技术选型与理由](#三技术选型与理由)
+- [四、具体实现](#四具体实现)
+- [五、修过的真实缺陷](#五修过的真实缺陷)
+- [六、能力边界](#六能力边界)
+- [七、工程验证](#七工程验证)
+- [八、快速开始](#八快速开始)
+- [九、目录结构](#九目录结构)
+- [十、设计文档](#十设计文档)
 
 ---
 
@@ -24,7 +62,53 @@ Spring Boot 3.5 / Java 21 · Redis 7 · MySQL 8 · RocketMQ 5.5 · ShardingSpher
 同一结构在售票、门诊挂号、疫苗预约、考试报名里反复出现:**有限库存 + 瞬时并发 + 实名限购 +
 凭证核销**。本项目按这个结构做,而不是按「一个 CRUD 加缓存」做。
 
-面向的读者有两类:要评估系统设计的人看第二至五节;要跑起来的人直接跳第七节。
+面向的读者有两类:要评估系统设计的人看第二至六节;要跑起来的人直接跳第八节。
+
+### 系统架构
+
+```mermaid
+flowchart TB
+    subgraph edge["边缘层"]
+        C["Caddy<br/>静态托管 · /api 反代 · 屏蔽 /actuator"]
+    end
+
+    subgraph app["应用层 · 单进程模块化单体"]
+        API["REST API<br/>43 端点"]
+        CON["MQ 消费者<br/>落库 · 补偿 · 过期"]
+        JOB["定时任务<br/>16 个 · 放号/对账/扫描"]
+    end
+
+    subgraph cache["Redis 7"]
+        L["Lua 原子脚本 ×6<br/>扣减 · 判重 · 借桶 · 限流"]
+        K["桶余量 · occupy · dup<br/>pending ZSet · slot:meta"]
+    end
+
+    subgraph mq["RocketMQ 5.5"]
+        T["reservation-created<br/>compensate-rollback<br/>timeout"]
+    end
+
+    subgraph db["MySQL 8 · 三数据源"]
+        D0[("ds0<br/>user/reservation")]
+        D1[("ds1<br/>user/reservation")]
+        DS[("single<br/>路由 · 审计 · 对账")]
+    end
+
+    U["游客 / 工作人员 / 管理员"] --> C --> API
+    API -->|"2 round-trip"| L
+    L --- K
+    API -->|同步发送| T
+    T --> CON
+    CON --> D0 & D1 & DS
+    JOB -->|"四类对账"| K
+    JOB --> DS
+    CON -->|"业务失败"| T
+
+    style L fill:#dc382d,color:#fff
+    style T fill:#d77310,color:#fff
+```
+
+抢号请求只经过 Caddy → API → Redis 两次 round-trip 即返回;落库由消费者异步完成,
+一致性由补偿与对账收口(见 [三、技术选型](#三技术选型与理由))。
 
 ---
 
@@ -124,19 +208,34 @@ hash,全局唯一直接失效。代价是 pepper 进了配额表主键,**不可�
 
 ### 4.1 抢号链路
 
-```
-读 slot:meta(一次 HGETALL 拿全 7 字段)
-  ├─ 空值标记存在        → 直接返回「场次不存在」,不打 DB
-  ├─ released=0          → 「未放号 + 倒计时」
-  ├─ valid_until < now   → 「已结束」
-  └─ 合法 → 算桶路由 → 进 grab.lua(单次 EVAL,原子)
-              ├─ 限流(user / slot 两维,1s 固定窗口)→ 超限返 -2,零副作用
-              ├─ 判重 SET NX dup                   → 已用返 -1
-              ├─ 主桶有余量 → 扣减 + 写 occupy 满载荷 + ZADD pending
-              ├─ 主桶空    → 按环形顺序借桶(避免低号桶被反复借空)
-              └─ 全空      → 写售罄标记 + 回滚判重位 + 返 0
-       ↓ 成功
-   同步发送 reservation-created → 消费者五阶段落库
+```mermaid
+flowchart TD
+    S["读 slot:meta<br/>一次 HGETALL 拿全 7 字段"] --> Q1{"空值标记?"}
+    Q1 -->|存在| E1["场次不存在<br/>不打 DB"]
+    Q1 -->|无| Q2{"released?"}
+    Q2 -->|0| E2["未放号 + 倒计时"]
+    Q2 -->|1| Q3{"valid_until > now?"}
+    Q3 -->|否| E3["已结束"]
+    Q3 -->|是| R["算桶路由<br/>hash(rno) % bucket_count"]
+
+    R --> LUA["grab.lua · 单次 EVAL · 原子"]
+
+    LUA --> G1{"限流<br/>user / slot 两维"}
+    G1 -->|超限| X1["返 -2<br/>零副作用"]
+    G1 -->|通过| G2{"SET NX dup"}
+    G2 -->|已存在| X2["返 -1 配额已用"]
+    G2 -->|成功| G3{"主桶有余量?"}
+    G3 -->|有| OK["扣减 + 写 occupy 满载荷<br/>+ ZADD pending · 返 1"]
+    G3 -->|无| G4{"环形借桶<br/>有余量?"}
+    G4 -->|有| OK
+    G4 -->|全空| X3["写售罄标记<br/>+ 回滚判重位 · 返 0"]
+
+    OK --> MQ["同步发送 reservation-created"]
+    MQ --> CON["消费者五阶段落库"]
+
+    style LUA fill:#dc382d,color:#fff
+    style OK fill:#2d7d3f,color:#fff
+    style MQ fill:#d77310,color:#fff
 ```
 
 状态校验前置在应用层而不是 Lua 内:业务分支清晰(三种返回各带倒计时),且不污染原子扣减脚本。
@@ -339,7 +438,7 @@ cd frontend && npm install && npm run dev  # vite 代理 /api 到 localhost:8080
 
 ---
 
-## 九、目录
+## 九、目录结构
 
 | 路径 | 内容 |
 |---|---|
