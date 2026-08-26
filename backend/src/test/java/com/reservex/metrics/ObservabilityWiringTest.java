@@ -228,6 +228,41 @@ class ObservabilityWiringTest {
     }
 
     /**
+     * 模拟 entrypoint 的渲染 + 残留占位符守卫。
+     *
+     * <p>上一个测试只分别检查"模板里有占位符"和"entrypoint 校验了变量",两条都绿,
+     * 但**没有一条走过渲染本身** —— 于是漏掉了这个:守卫的 {@code grep '__[A-Z_]*__'}
+     * 会命中模板顶部注释里用来解释占位符的那段 {@code __XXX__} 散文,
+     * 判定"仍有未替换的占位符"并 {@code exit 1}。结果是容器启动即退出、无限重启,
+     * Alertmanager 从头到尾没起来过 = **告警一封都发不出**,而 compose ps 只显示 restarting。
+     *
+     * <p>所以这里断言的是渲染后的**有效配置**(剥掉注释)不含占位符,
+     * 与 entrypoint 现在的判据同款。
+     */
+    @Test
+    void renderedAlertmanagerConfigLeavesNoPlaceholderInEffectiveLines() throws IOException {
+        String rendered = Files.readString(ALERTMANAGER)
+                .replace("__SMTP_FROM__", "ops@example.com")
+                .replace("__ALERT_EMAIL_TO__", "oncall@example.com");
+
+        String effective = rendered.lines()
+                .filter(line -> !line.stripLeading().startsWith("#"))
+                .collect(java.util.stream.Collectors.joining("\n"));
+
+        assertThat(effective)
+                .as("渲染后有效配置仍有占位符 → entrypoint 守卫会 exit 1,容器无限重启")
+                .doesNotContainPattern("__[A-Z_]+__");
+        assertThat(effective).contains("ops@example.com").contains("oncall@example.com");
+
+        // 守卫必须剥注释后再查,否则模板里解释占位符的散文会把自己判死。
+        String entrypoint = Files.readString(
+                repoFile("docker", "alertmanager", "entrypoint.sh"));
+        assertThat(entrypoint)
+                .as("残留占位符守卫必须先过滤注释行")
+                .containsPattern("grep -v '\\^\\[\\[:space:\\]\\]\\*#'");
+    }
+
+    /**
      * 曾经写过又删掉的坑:压 {@code domain="compensation"} 的抑制规则。
      *
      * <p>{@code equal} 只能对齐 {@code env},而所有序列的 env 都一样,

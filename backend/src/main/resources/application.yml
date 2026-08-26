@@ -187,6 +187,9 @@ reservex:
     dup-ttl-cap-days: 7                 # 上限兜底,防远期 slot 把 key 压太久
     meta-ttl-base-sec: 86400
     meta-ttl-jitter-sec: 300            # 05 §三 TTL 抖动
+    # 05 §1.3 空值缓存:挡"不存在的 slotId 反复打 DB"。
+    # GET /api/slots/{slotId} 无需登录且边缘不限流 → 没有它时每请求一次主键 SELECT。
+    absent-ttl-sec: 60
 
   pending:
     persist-timeout-sec: 30      # D2 scanner 捞取阈值
@@ -195,6 +198,15 @@ reservex:
     reinject-max: 5              # 同一 rno 补投上限;耗尽转 stuck,**不自主 10.2a**
     stuck-alert-after-min: 60    # 卡单逾期告警口径(08 §6.1);只喂 gauge,不触发自动处置
 
+  # ---- D4 验证码风控(CaptchaService)------------------------------------
+  # 四项都有读取点;此前只存在于 ReserveXProperties.Risk 的字段默认值里,
+  # yml 不声明 = 运维想调阈值时在"单一真理源"里找不到它(与 crons 那条同类问题)。
+  risk:
+    captcha-threshold: 5         # 抢号失败累计达此值 → 置 captcha-required
+    captcha-required-ttl-sec: 600
+    risk-counter-ttl-sec: 60     # 风控计数滚动窗口
+    captcha-ttl-sec: 300         # 验证码本身存活
+
   reminder:
     ahead-min: 30                # ReminderTrigger 延时到 valid_until - 30min
 
@@ -202,7 +214,9 @@ reservex:
     page-size: 500
     stock-auto-fix: false        # 库存对账默认**只告警不自动改**;开启必带 reconcile:fixing:* 守卫
     crons:
-      slot-gen: "0 30 2 * * ?"
+      # ⚠️ 这里**不放** slot-gen:场次生成的读取点是上面的 reservex.slot.gen-cron
+      #    (SlotService.generateScheduled)。曾在此重复声明过一份同值的 slot-gen,
+      #    没有任何读取点 —— 改它不生效,正是本文件开头那条"只写 yml 不读"的静默错误。
       release: "0 * * * * ?"          # 场次发布对账 1min
       reconcile-a: "0 * * * * ?"      # Redis→DB 1min
       reconcile-b: "0 */5 * * * ?"    # DB→Redis 5min
@@ -212,7 +226,8 @@ reservex:
       reminder: "0 */5 * * * ?"
       pending-idx: "0 */5 * * * ?"
       transition-outbox: "*/10 * * * * ?" # 分片终态 → 单库审计重放
-      orphan-route: "0 7 * * * ?"     # 孤儿 route 清理 1h
+      registration-outbox: "*/10 * * * * ?" # 注册跨库两写补偿重放(RegistrationOutboxWorker)
+      orphan-route: "0 7 * * * ?"     # 孤儿 route 清理 1h(每小时第 7 分,非每天 7 点)
     orphan-route-min-age-min: 10      # 守卫:不删在途注册的 route(03 §八·补)
 
   # ---- 四把密钥(两两不等,bootstrap/SecretGuard 启动断言)-------------------

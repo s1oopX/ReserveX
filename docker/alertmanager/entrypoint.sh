@@ -29,9 +29,15 @@ sed -e "s|__ALERT_EMAIL_TO__|${ALERT_EMAIL_TO}|g" \
     "${TEMPLATE}" > "${RENDERED}"
 
 # 占位符残留说明模板改了名字而这里没跟上,继续跑会把字面量当收件人。
-if grep -q '__[A-Z_]*__' "${RENDERED}"; then
+#
+# ⚠️ 必须先剥掉注释行再查。模板顶部的说明文字里写着 __XXX__ 来解释"占位符长什么样",
+#    直接 grep 会把那段散文当成残留 → 容器每次启动即退出、无限重启,而
+#    Alertmanager 从头到尾没起来过 = 告警一封都发不出。这正是本守卫想防的失效模式,
+#    却被它自己触发(渲染本身是好的:两个真占位符都已替换)。
+STRIPPED=$(grep -v '^[[:space:]]*#' "${RENDERED}" || true)
+if printf '%s' "${STRIPPED}" | grep -q '__[A-Z_]*__'; then
   echo "[alertmanager] 模板仍有未替换的占位符:" >&2
-  grep -o '__[A-Z_]*__' "${RENDERED}" | sort -u >&2
+  printf '%s' "${STRIPPED}" | grep -o '__[A-Z_]*__' | sort -u >&2
   exit 1
 fi
 

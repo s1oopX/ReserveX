@@ -96,6 +96,14 @@ public class ReserveXProperties {
         private int dupTtlCapDays = 7;
         private long metaTtlBaseSec = 86400;
         private long metaTtlJitterSec = 300;
+        /**
+         * 空值缓存 TTL(05 §1.3)。挡"不存在的 slotId 反复打 DB" ——
+         * {@code GET /api/slots/{slotId}} 无需登录且边缘不限流,没有这道缓存时
+         * 每个请求都是一次主键 SELECT。
+         *
+         * <p>短 TTL 是刻意的:新场次生成后最多被挡这么久(且 {@code cacheMeta} 会主动删标记)。
+         */
+        private long absentTtlSec = 60;
     }
 
     @Data

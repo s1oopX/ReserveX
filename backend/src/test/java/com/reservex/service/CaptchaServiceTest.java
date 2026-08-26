@@ -5,11 +5,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.script.RedisScript;
 
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -96,25 +98,37 @@ class CaptchaServiceTest {
     @Test
     void captchaRequiredOnlyAfterThresholdFailures() {
         long uid = USER_ID;
-        String counterKey = "risk:user:" + uid;
         String requiredKey = "captcha-required:user:" + uid;
 
-        // 阈值=5。前 4 次失败只 INCR 计数器,不置 required。
+        // 阈值=5。前 4 次失败只累加计数器,不置 required。
+        // 计数与"保证有 TTL"已合进一个 Lua(BUMP_RISK),故这里 stub 的是脚本返回值 ——
+        // 拆成 INCR + EXPIRE 两条命令时,两者之间崩溃会留下永不过期的计数器,
+        // 而它越过阈值后该用户被永久判定需要验证码(滚动窗口再也不滚)。
         for (long i = 1; i < THRESHOLD; i++) {
-            when(valueOps.increment(counterKey)).thenReturn(i);
+            when(redis.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+                    .thenReturn(i);
             service.recordGrabFailure(uid);
-            // 首次失败设置计数器过期时间
-            if (i == 1) {
-                verify(valueOps).getAndExpire(eq(counterKey), any(Duration.class));
-            }
         }
-        // 前 4 次都不应置 captcha-required(set 在 opsForValue 上,不在 redis 直接调用)
         verify(valueOps, never()).set(eq(requiredKey), eq("1"), any(Duration.class));
 
         // 第 5 次达阈值 → 置 required
-        when(valueOps.increment(counterKey)).thenReturn((long) THRESHOLD);
+        when(redis.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+                .thenReturn((long) THRESHOLD);
         service.recordGrabFailure(uid);
         verify(valueOps, times(1)).set(eq(requiredKey), eq("1"), any(Duration.class));
+    }
+
+    /** 计数与设 TTL 必须同一次 Redis 调用:两条命令之间崩溃 = 计数器永不过期。 */
+    @Test
+    void riskCounterGetsItsTtlInTheSameAtomicCall() {
+        when(redis.execute(any(RedisScript.class), anyList(), any(Object[].class))).thenReturn(1L);
+
+        service.recordGrabFailure(USER_ID);
+
+        // 不允许再走"INCR 后单独 EXPIRE"的两步写法
+        verify(valueOps, never()).increment(any(String.class));
+        verify(valueOps, never()).getAndExpire(any(String.class), any(Duration.class));
+        verify(redis).execute(any(RedisScript.class), anyList(), any(Object[].class));
     }
 
     @Test

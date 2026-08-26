@@ -49,6 +49,67 @@ class SlotServiceTest {
                 .isInstanceOf(com.reservex.common.BizException.class);
     }
 
+    /**
+     * 05 §1.3 空值缓存。{@code GET /api/slots/{slotId}} 无需登录、边缘不限流,
+     * 没有这道缓存时拿随机 slotId 刷它就是"每请求一次主键 SELECT"。
+     * 断言第二次查询**不再碰 DB**,而不是只断言"两次都 404"(那样漏掉缓存没生效的情况)。
+     */
+    @Test
+    void absentSlotIsCachedSoRepeatedLookupsDoNotReachTheDatabase() {
+        SlotMapper slots = mock(SlotMapper.class);
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        ValueOperations<String, String> values = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(values);
+        when(slots.selectById(404L)).thenReturn(null);
+        // 首次:标记不存在 → 落到 DB → DB 也没有 → 写标记
+        when(redis.hasKey("slot:meta:absent:404")).thenReturn(false);
+        SlotService service = serviceWith(slots, redis);
+
+        assertThatThrownBy(() -> service.getSlot(404L))
+                .isInstanceOf(com.reservex.common.BizException.class);
+        verify(slots).selectById(404L);
+        verify(values).set("slot:meta:absent:404", "1", java.time.Duration.ofSeconds(60));
+
+        // 第二次:标记已在 → 必须直接抛,不得再查 DB
+        when(redis.hasKey("slot:meta:absent:404")).thenReturn(true);
+        assertThatThrownBy(() -> service.getSlot(404L))
+                .isInstanceOf(com.reservex.common.BizException.class);
+        verify(slots, org.mockito.Mockito.times(1)).selectById(404L);
+    }
+
+    /** 场次真实存在时必须清掉空值标记,否则新生成的场次被自己的缓存挡住(列表有、详情 404)。 */
+    @Test
+    void cachingRealSlotClearsTheAbsentMarker() {
+        SlotMapper slots = mock(SlotMapper.class);
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        when(redis.opsForValue()).thenReturn(mock(ValueOperations.class));
+        when(redis.opsForHash()).thenReturn(mock(org.springframework.data.redis.core.HashOperations.class));
+        when(redis.hasKey("slot:meta:absent:7")).thenReturn(false);
+        Slot slot = new Slot();
+        slot.setSlotId(7L);
+        slot.setReleased(1);
+        slot.setReleaseAt(java.time.LocalDateTime.now());
+        slot.setValidUntil(java.time.LocalDateTime.now().plusHours(2));
+        slot.setSlotHour(9);
+        slot.setCapacity(50);
+        slot.setBucketCount(10);
+        slot.setSlotDate(java.time.LocalDate.now());
+        when(slots.selectById(7L)).thenReturn(slot);
+
+        serviceWith(slots, redis).ensureCached(7L);
+
+        verify(redis).delete("slot:meta:absent:7");
+    }
+
+    private static SlotService serviceWith(SlotMapper slots, StringRedisTemplate redis) {
+        ReserveXProperties props = new ReserveXProperties();
+        PlatformTransactionManager tx = mock(PlatformTransactionManager.class);
+        when(tx.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        return new SlotService(mock(SlotTemplateMapper.class), slots, mock(SlotBucketMapper.class),
+                mock(AuditLogMapper.class), mock(IdGenerator.class), new TimeSupport(props), props,
+                mock(LuaScripts.class), redis, mock(RedissonClient.class), tx);
+    }
+
     @Test
     void bucketSplitPreservesCapacityAndRemainderOrder() {
         Slot slot = new Slot();

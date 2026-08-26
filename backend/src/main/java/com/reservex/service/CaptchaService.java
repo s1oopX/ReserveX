@@ -46,6 +46,20 @@ public class CaptchaService {
             if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
             return count <= tonumber(ARGV[2]) and 1 or 0
             """, Long.class);
+    /**
+     * 风控计数:INCR + 保证有 TTL,原子。
+     *
+     * <p>拆成两条命令(INCR 后再 EXPIRE)时,两者之间进程崩溃会留下**永不过期**的计数器 ——
+     * 而它一旦越过阈值,该用户就被永久判定"需要验证码"(滚动窗口再也不滚)。
+     * 用 {@code EXPIRE NX} 而非"仅 count==1 时设":后者修不掉已经漏成无 TTL 的老 key。
+     *
+     * <p>返回累加后的值,调用方据此判阈值。
+     */
+    private static final DefaultRedisScript<Long> BUMP_RISK = new DefaultRedisScript<>("""
+            local count = redis.call('INCR', KEYS[1])
+            redis.call('EXPIRE', KEYS[1], ARGV[1], 'NX')
+            return count
+            """, Long.class);
 
     private final StringRedisTemplate redis;
     private final ReserveXProperties props;
@@ -116,11 +130,8 @@ public class CaptchaService {
      */
     public void recordGrabFailure(long userId) {
         String counterKey = riskCounterKey(userId);
-        Long cnt = redis.opsForValue().increment(counterKey);
-        if (cnt != null && cnt == 1L) {
-            redis.opsForValue().getAndExpire(counterKey,
-                    Duration.ofSeconds(props.getRisk().getRiskCounterTtlSec()));
-        }
+        Long cnt = redis.execute(BUMP_RISK, List.of(counterKey),
+                Integer.toString(props.getRisk().getRiskCounterTtlSec()));
         int threshold = props.getRisk().getCaptchaThreshold();
         if (cnt != null && cnt >= threshold) {
             redis.opsForValue().set(captchaRequiredKey(userId), "1",

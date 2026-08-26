@@ -32,7 +32,7 @@
 -- ARGV[11] = create_ts
 -- ARGV[12] = pending ZSet key
 -- ARGV[13] = slot_full_key (slot:full:{slot_id})
--- ARGV[14] = slot_full_ttl (秒, = slot_date 当日结束 − now)
+-- ARGV[14] = slot_full_ttl (秒, = slot_date 当日结束 − now;同时用作 stats 埋点 TTL)
 -- ARGV[15] = user_rps  (用户级 1 秒固定窗口上限,取 yml ratelimit.user-redis-rps)
 -- ARGV[16] = slot_rps  (场次级 1 秒固定窗口上限,取 yml ratelimit.slot-redis-rps)
 -- ============================================================================
@@ -71,7 +71,16 @@ local function occupy(bucketKey)
     -- 10.2a 回滚靠 HGET 'bucket' 拿完整 key,少一个就无法回滚到正确的桶
     -- occupy 是扣库存后的恢复证据，只能由成功消费或明确补偿删除。
     redis.call('ZADD', ARGV[12], ARGV[11], ARGV[1]) -- D2 pending 索引
-    redis.call('INCR', 'stats:bucket:'..bucketKey..':hit')  -- 压测埋点
+    -- 压测埋点。TTL 与桶同寿(派生自 slot_date 当日结束),不硬编码:
+    -- 裸 INCR 会留下永不过期的 key,而 maxmemory-policy=noeviction 下它们只增不减,
+    -- 每场次每桶一条永久驻留 —— 这类"埋点把内存吃掉"的泄漏没有任何功能表现。
+    --
+    -- 用 EXPIRE ... NX(Redis 7.0+)而不是"仅首次 INCR 时 EXPIRE":后者只覆盖
+    -- 本次新建的 key,**修不掉修复前已存在的无 TTL 老 key**(它们的 INCR 永远不返 1,
+    -- 于是永久驻留)。NX 语义是"没有 TTL 才设",既幂等又能顺手把老 key 收口。
+    local hitKey = 'stats:bucket:'..bucketKey..':hit'
+    redis.call('INCR', hitKey)
+    redis.call('EXPIRE', hitKey, ARGV[14], 'NX')
     return 1
 end
 
@@ -84,6 +93,7 @@ for i = 2, n - 2 do
     local other = tonumber(redis.call('GET', KEYS[i]) or 0)
     if other > 0 then
         redis.call('INCR', 'stats:borrow:'..KEYS[i])
+        redis.call('EXPIRE', 'stats:borrow:'..KEYS[i], ARGV[14], 'NX')
         return occupy(KEYS[i])
     end
 end

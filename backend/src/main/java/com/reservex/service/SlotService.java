@@ -214,19 +214,35 @@ public class SlotService {
     }
 
     public SlotView getSlot(long slotId) {
-        Slot slot = slotMapper.selectById(slotId);
-        if (slot == null) {
-            throw BizException.of(ErrorCode.SLOT_NOT_FOUND);
-        }
-        return toView(slot);
+        return toView(loadExisting(slotId));
     }
 
     public void ensureCached(long slotId) {
-        Slot slot = slotMapper.selectById(slotId);
-        if (slot == null) {
+        cacheMeta(loadExisting(slotId));
+    }
+
+    /**
+     * 按主键取 slot,不存在则抛 {@code SLOT_NOT_FOUND} 并写空值缓存(05 §1.3)。
+     *
+     * <p>为什么必须有这道缓存:{@code GET /api/slots/{slotId}} **不需要登录**,而边缘
+     * (Caddy)按设计不做限流 —— 没有它时,拿随机 slotId 刷这个接口就是"每请求一次主键
+     * SELECT",三个连接池加起来只有 70 条连接。这是 05 §1.3 写下却一直没落地的一条。
+     *
+     * <p>⚠️ 标记**不能**写在 {@code slot:meta:{slotId}} 上(那是 Hash,写 String 会让
+     * 后续 {@code HGETALL} 报 WRONGTYPE,把"场次不存在"变成 500,且 {@code cacheMeta}
+     * 的 {@code HSET} 也会失败)。故用独立 key,语义仍与 {@code slot:full} 分开。
+     */
+    private Slot loadExisting(long slotId) {
+        if (Boolean.TRUE.equals(redis.hasKey(absentKey(slotId)))) {
             throw BizException.of(ErrorCode.SLOT_NOT_FOUND);
         }
-        cacheMeta(slot);
+        Slot slot = slotMapper.selectById(slotId);
+        if (slot == null) {
+            long ttl = Math.max(1L, props.getRedisKey().getAbsentTtlSec());
+            redis.opsForValue().set(absentKey(slotId), "1", Duration.ofSeconds(ttl));
+            throw BizException.of(ErrorCode.SLOT_NOT_FOUND);
+        }
+        return slot;
     }
 
     public List<AdminSlotView> listAdminSlots(LocalDate date) {
@@ -541,6 +557,9 @@ public class SlotService {
     }
 
     private void cacheMeta(Slot slot) {
+        // 场次已存在 → 清掉可能存在的空值标记。漏这一步会让"刚生成的场次"被自己的
+        // 空值缓存挡住最长 absent-ttl-sec 秒,而现象是列表里有、点进去 404。
+        redis.delete(absentKey(slot.getSlotId()));
         Map<String, String> meta = new LinkedHashMap<>();
         meta.put("released", Integer.toString(slot.getReleased()));
         meta.put("release_at", Long.toString(time.toEpochSecond(slot.getReleaseAt())));
@@ -575,6 +594,11 @@ public class SlotService {
 
     private static String metaKey(long slotId) {
         return "slot:meta:" + slotId;
+    }
+
+    /** 空值缓存 key(05 §1.3)。独立于 Hash 的 {@code slot:meta:*},见 {@link #loadExisting}。 */
+    private static String absentKey(long slotId) {
+        return "slot:meta:absent:" + slotId;
     }
 
     private static String bucketKey(long slotId, int bucketNo) {
