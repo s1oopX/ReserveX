@@ -315,11 +315,22 @@ return 1
 
 ## 七、Lua 脚本清单与调用方对照(编码索引)
 
+> ☑ 本表与 `backend/src/main/resources/lua/` 逐条核对过(2026-08)。此前它少列 2 个脚本、
+> ARGV 数与返回值有 6 处与代码不符 —— 而这张表的用途正是「编码索引」,错的索引比没有索引更坏。
+
 | 脚本文件(08 §一 `lua/`) | 章节 | 调用方 | KEYS | ARGV | 返回 |
 |---|---|---|---|---|---|
-| `grab.lua` | §二 10.1 | ReservationService(抢号) | 命中桶 + 环形借桶序 | 14 项(见 §二) | 1成功/0售罄/-1配额已用 |
-| `compensate.lua` | §三 10.2a | rollback-consumer | 命中桶(实际从 occupy 读,KEYS 仅占位) | 4 项 | 1回滚/0已回滚 |
-| `release.lua` | §四 10.3 | release-consumer | 全部桶 | N+2 项 | 1 |
-| `incr.lua` | §六 增容 | AdminSlotService | 全部桶 | N+1 项 | 1 |
+| `grab.lua` | §二 10.1 | `ReservationService.grab` | 命中桶 + 环形借桶序 **+ 末尾 2 个限流 key** | **16 项**(见 §二) | 1 成功 / 0 售罄 / -1 配额已用 / **-2 限流** |
+| `compensate.lua` | §三 10.2a | `RollbackService.compensate`(rollback-consumer 与人工回滚) | 命中桶(实际从 occupy 读真实桶,KEYS 为兜底) | 4 项 | 1 本次回滚 / **2 已回滚(幂等)** / 0 无可证明对象 |
+| `release.lua` | §四 10.3 | `SlotService.initializeBuckets`(放号) | 全部桶 | **N+3 项**(slot_id / ttl / 容量版本) | 恒 1 |
+| `incr.lua` | §六 增容 | `SlotService.applyCapacityDelta` | 全部桶 | **N+4 项**(slot_id / 期望版本 / 新版本 / 新容量) | 1 本次增容 / 2 已应用 / 0 版本不匹配 |
+| `mark_cancel.lua` | §五 | `ReservationService.cancel`(窗口期取消) | `occupy:{rno}` | 3 项 | 1 已标记 / 0 无证据 / -1 越权 / 2 已过期 |
+| `reinject.lua` | §三·补 | `PendingScanner.scanOne`(补投计数) | `occupy:{rno}` | 0 项 | 补投次数 / 0 occupy 已清理 |
 
-> ⚠️ 四个脚本**全部用 Redisson `RScript.eval` + SHA 缓存**(`scriptLoad` 预加载,`evalSha` 调用),不用每次传全文。脚本变更须清 SHA 缓存(`SCRIPT FLUSH` 或重启)——**编码红线:改了 lua 文件必须重启 backend,否则跑的还是旧脚本**,这在联调期最容易踩。
+> ⚠️ **§五「无 Lua」只针对 B 类的 DB 侧收口**:预约已落库时取消/过期是纯 DB 状态机 CAS,不碰
+> Redis。但「已扣未落」的窗口期取消需要在 occupy 上原子打标,那是 `mark_cancel.lua` ——
+> 它不回补库存(不违反 M1),只记录取消意图供消费者落库时读取。两者不矛盾。
+
+> ⚠️ 六个脚本**全部用 Redisson `RScript` + SHA 缓存**(`scriptLoad` 预加载,`evalSha` 调用),
+> 不每次传全文。脚本变更须清 SHA 缓存(`SCRIPT FLUSH` 或重启)——**编码红线:改了 lua 文件
+> 必须重启 backend,否则跑的还是旧脚本**,这在联调期最容易踩。
