@@ -8,12 +8,42 @@
 
 ```bash
 cp .env.example .env
-# 生成四把密钥,四个值必须互不相同(启动时会断言,相同则拒绝启动)
+```
+
+`.env.example` 里有 **14 个变量没有默认值,必须全部填上**。只填四把密钥是不够的 ——
+漏任何一个,`docker compose` 的**所有子命令**都会因插值失败而报错,而报错只提缺失的那一个
+(例如只说 Grafana 口令),不会告诉你还漏着另外几个。
+
+```bash
+# ① 四把密钥:必须两两不等,启动时 SecretGuard 会断言,相同即拒绝启动
 openssl rand -base64 32   # AES_KEY,必须恰好 32 字节
 openssl rand -base64 48   # ID_HASH_PEPPER
 openssl rand -base64 48   # QR_HMAC_KEY
 openssl rand -base64 48   # JWT_SECRET
-# 填进 .env,然后:
+
+# ② 基础设施口令(任意强口令即可)
+#    MYSQL_ROOT_PASSWORD / MYSQL_APP_PASSWORD / REDIS_PASSWORD
+#    ROCKETMQ_APP_SECRET_KEY / ROCKETMQ_ADMIN_SECRET_KEY  ← 这两个必须互不相同
+openssl rand -hex 32
+
+# ③ 观测面板口令。⚠️ 缺它 compose 直接拒绝解析 ——
+#    Grafana 自己在没设口令时不报错,而是静默回落到 admin/admin
+openssl rand -base64 24   # GRAFANA_ADMIN_PASSWORD
+
+# ④ 超管首登密码(团队可见,首次登录强制改密)
+#    ADMIN_INIT_PASSWORD
+
+# ⑤ 邮件三项。演示环境可先填占位值,代价是发信会 535 失败(容器仍能起来):
+#    QQ_SMTP_PASSWORD=占位  SMTP_FROM=you@qq.com  ALERT_EMAIL_TO=you@qq.com
+#    ⚠️ SMTP_FROM 必须与 QQ_SMTP_PASSWORD 是同一个 QQ 账号,否则 SMTP 认证 535
+```
+
+填完自检 —— 直接查"还有哪个是空的",不数总行数(可选的内存覆盖项填不填都行,
+总数因人而异):
+
+```bash
+grep -nE "^[A-Z_0-9]+=$" .env     # 有输出 = 那几行还没填;无输出才算填完
+docker compose config --quiet && echo "插值通过"
 docker compose up --build
 ```
 
