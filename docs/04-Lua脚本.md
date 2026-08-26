@@ -7,14 +7,15 @@
 | Key | 类型 | 写入者 | TTL | 用途 |
 |---|---|---|---|---|
 | `slot:{slotId}:b:{bucketNo}` | String | 10.3 放号 SET / 10.1 抢 DECR / 10.2a INCR | 当日结束 | 桶余量(原子写对象,不回源) |
-| `occupy:{rno}` | Hash | 10.1 抢号写满载荷(EXPIRE 30min)/ 消费成功可删 / 10.2a 删 / scanner 续期 | **30min**(10.1 设;scanner 每轮对仍 pending 的 rno 续期) | 待落库凭证(outbox)+ 窗口期渲染 |
+| `occupy:{rno}` | Hash | 10.1 抢号写满载荷(**不设 TTL**)/ 消费成功删 / 10.2a 删 | **无**(见 §1.3) | 待落库凭证(outbox)+ 窗口期渲染 |
 | `dup:{slot_date}:{id_card_hash}` | String | 10.1 SET NX / 10.2a DEL | **`slot_date` 当日 23:59:59 − now**(见 §1.1) | 全日配额判重第一道 |
 | `pending:persist` | ZSet | 10.1 ZADD / 消费成功 ZREM / 10.2a ZREM / scanner ZRANGEBYSCORE | 永久(scanner 清理) | 超时未落库索引 |
 | `slot:meta:{slotId}` | Hash | 放号/增容主动写 / 单飞重建 | 长 TTL + 抖动 | 场次元数据(穿透防护+列表读源) |
-| `slot:meta:{slotId}=NULL` | String(空标记) | 查 DB 无 → 写 | 短(60s) | 空值缓存(挡不存在,与 slot:full 不可复用) |
+| `slot:meta:absent:{slotId}` | String(空标记) | 查 DB 无 → 写 / `cacheMeta` DEL | 短(60s,`absent-ttl-sec`) | 空值缓存(挡不存在)。⚠️ **独立 key**,不能写在 Hash `slot:meta:{slotId}` 上 —— 类型冲突会让后续 HGETALL 报 WRONGTYPE(05 §1.3) |
 | `slot:full:{slotId}` | String | **10.1 Lua 内售罄时 SET**(§1.2)/ 10.2a DEL / 10.3 放号 DEL | 当日结束 | 约满标记(挡真售罄重查) |
-| `stats:bucket:{key}:hit` / `stats:borrow:{key}` | String | 10.1 INCR | — | 压测埋点 |
-| `rl:user:{id}` / `rl:slot:{slotId}` | (RRateLimiter) | 限流器 | — | Redis 限流第二层 |
+| `stats:bucket:{key}:hit` / `stats:borrow:{key}` | String | 10.1 INCR(首次 INCR 时 EXPIRE) | 当日结束(与桶同寿) | 压测埋点 |
+| `ratelimit:user:{userId}` / `ratelimit:slot:{slotId}` | String | **10.1 Lua 内** INCR + 首次 EXPIRE(D5) | 1s 固定窗口 | 用户/场次两维限流,折叠进抢号 Lua 保持 2 round-trip |
+| ~~`rl:user:{id}` / `rl:slot:{slotId}`~~ | ~~(RRateLimiter)~~ | **已取消** | — | 原计划用 Redisson `RRateLimiter` 做第二层限流。D5 把限流折叠进 10.1 Lua(上一行)后这套不再存在:独立限流器要额外 round-trip,而抢号的硬约束是 2 次。代码中无 `rl:` 前缀 |
 | Sa-Token 会话 | — | Sa-Token + Redis token mapping | access 30min / refresh 7d | 鉴权与即时撤销 |
 
 > ⚠️ 单飞重建锁**只用在 `slot:meta` 重建**(05 §二)。桶余量/`slot:full`/`dup` **不套单飞**——它们是原子写对象,套锁破坏 Lua 原子性。
@@ -44,29 +45,72 @@
 
 > ⚠️ 对称地,**任何"桶余量从 0 变正"的路径都必须 `DEL slot:full`**:10.2a 补偿回补(§三)、10.3 放号(§四)、§六 增容。三处已全部落地,漏一处即"幽灵售罄"。
 
-## 二、10.1 抢号 + 判重 + 借桶(原子)
+### 1.3 `occupy` 刻意**无 TTL**(☑ 修:原"30min + scanner 续期"已废弃)
+
+⚠️ **原设计**:occupy 设 30min TTL,scanner 每轮对仍 pending 的 rno 续期;补投达上限后停止续期。
+
+**问题**:TTL 让"库存已扣但落库未完成"这个事实**会自己消失**。一旦它在补投耗尽、卡单入表、或 Redis 抖动期间过期,`bucket_key` / `dup_key` 就再也拿不到 —— 桶余量永久泄漏,而对账只能报出 diff、修不掉(它不知道该回补哪个桶)。"续期"把正确性押在"scanner 每轮都活着"上,而 scanner 停摆恰恰是最该被兜住的故障。
+
+**裁定**:occupy 是**扣减后的恢复证据**,不设 TTL。删除权只属于两处 —— 成功落库的消费者、补偿脚本 `10.2a`。别处删 = 库存永久泄漏。
+
+- `PendingScanner` 每轮对扫到的 occupy 调 `PERSIST`(兼容升级前带 TTL 的存量 key),而不是续期;
+- 转卡单时先断言 occupy 仍存在,再把 `bucket_key`/`dup_key` **抄进 `stuck_reservation`**(03 §八),不把可回滚性押在 Redis 上;
+- 代价是 occupy 只能由业务路径回收 —— 这正是想要的:泄漏一条就有一条查得到的证据,而不是静默消失。
+
+## 二、10.1 抢号 + 限流 + 判重 + 借桶(原子)
+
+> ⚠️ 本节代码块与 `backend/src/main/resources/lua/grab.lua` **逐字一致**,改一处必须两处同步。
+> `GrabLuaContractTest` 对其中三条形态(occupy 无 TTL、`ARGV[10]=id_card_hash`、借桶上界 `n-2`)有断言。
 
 ```lua
--- KEYS[1]   = 命中桶 key (slot:{slot_id}:b:{bucket_no}),bucket_no 由应用层按 03 §4.3 路由函数算出
--- KEYS[2..] = 借桶扫描 keys,应用层按 (bucket_no+i) % bucket_count 环形顺序排好传入(03 §4.3)
+-- 返回值契约(调用方按此分支):
+--    1  预占成功
+--    0  已约满(真售罄,已写 slot:full 标记)
+--   -1  今日配额已用(调用方读 dup 字符串复核后可恢复幂等响应)
+--   -2  限流命中(user 或 slot 维度超 1 秒固定窗口)
+--
+-- KEYS[1]      = 命中桶 key (slot:{slot_id}:b:{bucket_no}),bucket_no 由应用层按 03 §4.3 算出
+-- KEYS[2..n]   = 借桶扫描 keys,应用层按 (bucket_no+i) % bucket_count 环形顺序排好传入
+-- KEYS[n+1]    = ratelimit:user:{userId}      ← D5 折叠进 Lua,保持 2 round-trip
+-- KEYS[n+2]    = ratelimit:slot:{slotId}
+--   其中 n = bucket_count(借桶数含命中桶)。
+-- ⚠️ 末尾两个 KEYS 不是桶 —— 借桶循环上界必须是 n-2,写 #KEYS 会把限流 key 当库存桶读写。
+--
 -- ARGV[1]  = reservation_no
 -- ARGV[2]  = slot_id          ← occupy 满载荷(D1)。⚠️ 旧版误把 userId 写此位,已修
 -- ARGV[3]  = userId
 -- ARGV[4]  = dup_key (dup:{slot_date}:{id_card_hash})
--- ARGV[5]  = dup_ttl (秒, = slot_date 当日 23:59:59 − now,上限 7 天 —— 见 §1.1,旧版"次日0点"已修)
+-- ARGV[5]  = dup_ttl (秒, = slot_date 当日 23:59:59 − now,上限 7 天 —— 见 §1.1)
 -- ARGV[6]  = slot_date
 -- ARGV[7]  = slot_hour
 -- ARGV[8]  = valid_until(ts)   ← 来自 slot.valid_until 固化字段(03 §4.1)
 -- ARGV[9]  = id_card_masked
--- ARGV[10] = create_ts
--- ARGV[11] = pending ZSet key
--- ARGV[12] = slot_full_key (slot:full:{slot_id})       ← ☑ §1.2 补
--- ARGV[13] = slot_full_ttl (秒, = slot_date 当日结束 − now)  ← ☑ §1.2 补
--- ARGV[14] = occupy_ttl (秒, 默认 1800,取 yml pending.occupy-ttl-sec)
+-- ARGV[10] = id_card_hash      ← scanner/stuck 回滚证据。⚠️ 比旧版多插一位,其后全部后移
+-- ARGV[11] = create_ts
+-- ARGV[12] = pending ZSet key
+-- ARGV[13] = slot_full_key (slot:full:{slot_id})            ← ☑ §1.2 补
+-- ARGV[14] = slot_full_ttl (秒, = slot_date 当日结束 − now;同时用作 stats 埋点 TTL)
+-- ARGV[15] = user_rps  (取 yml ratelimit.user-redis-rps)     ← ☑ D5
+-- ARGV[16] = slot_rps  (取 yml ratelimit.slot-redis-rps)     ← ☑ D5
+
+-- 第零道:限流(D5)。1 秒固定窗口:INCR + 首次 EXPIRE。
+-- 放在最前:限流命中时不该再动 dup / 桶 / occupy,失败必须干净。
+-- Lua 在 Redis 单线程里原子执行,INCR 后到 EXPIRE 之间不会有并发插入 → 无竞态。
+local n = #KEYS
+local rlUserKey   = KEYS[n - 1]
+local rlSlotKey   = KEYS[n]
+local userRps = tonumber(ARGV[15])
+local slotRps = tonumber(ARGV[16])
+local userCnt = redis.call('INCR', rlUserKey)
+if userCnt == 1 then redis.call('EXPIRE', rlUserKey, 1) end
+if userCnt > userRps then return -2 end
+local slotCnt = redis.call('INCR', rlSlotKey)
+if slotCnt == 1 then redis.call('EXPIRE', rlSlotKey, 1) end
+if slotCnt > slotRps then return -2 end
 
 -- 第一道:全日配额判重(不占库存的快速失败)
 if redis.call('SET', ARGV[4], ARGV[1], 'NX', 'EX', ARGV[5]) == false then
-    return -1  -- 今日配额已用
+    return -1
 end
 
 -- occupy():bucketKey = 命中桶完整 key(主桶 KEYS[1] 或借桶 KEYS[i])
@@ -77,33 +121,52 @@ local function occupy(bucketKey)
     redis.call('HSET', 'occupy:'..ARGV[1],
         'slot_id', ARGV[2], 'slot_date', ARGV[6], 'slot_hour', ARGV[7],
         'valid_until', ARGV[8], 'bucket', bucketKey, 'bucket_no', bno,
-        'user_id', ARGV[3], 'id_card_masked', ARGV[9], 'create_ts', ARGV[10])
-    -- ☑ bucket(完整桶 key,10.2a INCR 用)+ bucket_no(裸号)显式双存,弃旧 KEYS_idx 伪码
-    redis.call('EXPIRE', 'occupy:'..ARGV[1], ARGV[14])  -- TTL 见 §一 / yml occupy-ttl-sec
-    redis.call('ZADD', ARGV[11], ARGV[10], ARGV[1]) -- D2 pending 索引
-    redis.call('INCR', 'stats:bucket:'..bucketKey..':hit')  -- 压测埋点
+        'user_id', ARGV[3], 'id_card_masked', ARGV[9], 'id_card_hash', ARGV[10],
+        'create_ts', ARGV[11])
+    -- bucket(完整桶 key,10.2a INCR 用)+ bucket_no(裸号)显式双存:
+    -- 10.2a 回滚靠 HGET 'bucket' 拿完整 key,少一个就无法回滚到正确的桶
+    -- occupy 是扣库存后的恢复证据，只能由成功消费或明确补偿删除。
+    redis.call('ZADD', ARGV[12], ARGV[11], ARGV[1]) -- D2 pending 索引
+    -- 压测埋点。TTL 与桶同寿(派生自 slot_date 当日结束),不硬编码:
+    -- 裸 INCR 会留下永不过期的 key,而 maxmemory-policy=noeviction 下它们只增不减,
+    -- 每场次每桶一条永久驻留 —— 这类"埋点把内存吃掉"的泄漏没有任何功能表现。
+    --
+    -- 用 EXPIRE ... NX(Redis 7.0+)而不是"仅首次 INCR 时 EXPIRE":后者只覆盖
+    -- 本次新建的 key,**修不掉修复前已存在的无 TTL 老 key**(它们的 INCR 永远不返 1,
+    -- 于是永久驻留)。NX 语义是"没有 TTL 才设",既幂等又能顺手把老 key 收口。
+    local hitKey = 'stats:bucket:'..bucketKey..':hit'
+    redis.call('INCR', hitKey)
+    redis.call('EXPIRE', hitKey, ARGV[14], 'NX')
     return 1
 end
 
 local cur = tonumber(redis.call('GET', KEYS[1]) or 0)
 if cur > 0 then return occupy(KEYS[1]) end
 
--- 借桶:按应用层给定的环形顺序扫其他桶
-for i = 2, #KEYS do
+-- 借桶:按应用层给定的环形顺序扫其他桶。
+-- ⚠️ 末尾两个 KEYS 是限流 key(D5),不是桶,循环上界 = n - 2。
+for i = 2, n - 2 do
     local other = tonumber(redis.call('GET', KEYS[i]) or 0)
     if other > 0 then
         redis.call('INCR', 'stats:borrow:'..KEYS[i])
+        redis.call('EXPIRE', 'stats:borrow:'..KEYS[i], ARGV[14], 'NX')
         return occupy(KEYS[i])
     end
 end
 
 -- 全空:真售罄
-redis.call('SET', ARGV[12], 1, 'EX', ARGV[13])   -- ☑ §1.2:写约满标记(与判满同原子,防增容竞态)
-redis.call('DEL', ARGV[4])                       -- 回滚判重标记(本次未占号,不应阻塞该证当天重试他场)
+redis.call('SET', ARGV[13], 1, 'EX', ARGV[14])   -- 写约满标记(与判满同原子,防增容竞态)
+redis.call('DEL', ARGV[4])                       -- 回滚判重标记:本次未占号,不应阻塞该证当天重试他场
 return 0  -- 已约满
 ```
 
-> ☑ 已落地:命中桶号由 `string.match(bucketKey, ':(%d+)$')` 从完整 key 推导,**不再用** `tostring(KEYS_idx)` 伪码;`bucket`(完整桶 key)+ `bucket_no`(裸号)显式双存,与 §三 10.2a 的 `HGET 'bucket'` 严格对齐。`slot_id` 字段从误写的 `ARGV[2]` 修正为真正的 slot_id(ARGV[2] 重排为 slot_id,userId 下移至 ARGV[3])。**新增 ARGV[12..14]:slot:full 写入(§1.2)+ occupy TTL 可配。**
+> ☑ 已落地:命中桶号由 `string.match(bucketKey, ':(%d+)$')` 从完整 key 推导,**不再用** `tostring(KEYS_idx)` 伪码;`bucket`(完整桶 key)+ `bucket_no`(裸号)显式双存,与 §三 10.2a 的 `HGET 'bucket'` 严格对齐。`slot_id` 字段从误写的 `ARGV[2]` 修正为真正的 slot_id(ARGV[2] 重排为 slot_id,userId 下移至 ARGV[3])。
+>
+> ☑ 相对最初版本的三处结构变化(**与代码同步于本次审查**):
+> 1. **D5 限流折叠进本脚本**:末尾两个 KEYS + `ARGV[15..16]`,限流命中返 `-2` 且**零副作用**(桶不扣、无 occupy、dup 不写)。代价是借桶循环上界从 `#KEYS` 改成 `n-2` —— 这一处写错不会报错,只会让限流 key 被当成库存桶 `GET`/`DECR`。
+> 2. **`ARGV[10]` 插入 `id_card_hash`**,其后各位全部后移(create_ts 10→11,pending 11→12,slot_full 12→13,ttl 13→14)。它是 scanner 转卡单时拼 `dup_key` 的唯一来源。
+> 3. **occupy 不再 `EXPIRE`**(见 §1.3),原 `ARGV[14]=occupy_ttl` 取消;该位现为 `slot_full_ttl`,并复用为 stats 埋点 TTL。
+> 4. **stats 埋点补 TTL**:原先是裸 `INCR`,留下永不过期的 key。`maxmemory-policy=noeviction` 下它们只增不减(每场次每桶各一条),是一条**没有任何功能表现**的内存泄漏。用 `EXPIRE ... NX`(Redis 7.0+)而非"仅首次 INCR 时设" —— 后者只覆盖新建的 key,修不掉修复前遗留的无 TTL 老 key(它们的 `INCR` 永远不返 1)。NX 幂等且顺手收口老 key,已在真 Redis 上验过两种前置态。
 
 > ⚠️ **D3 前置**:本脚本不含 slot 状态校验。已放号/未过期校验在**应用层读 `slot:meta`** 前置完成(05 §一),非法 slot_id 不进本 Lua。
 
@@ -227,7 +290,7 @@ WHERE slot_id=? AND status=0 AND valid_until<NOW();
 >
 > **只有核销带 `version=?`**(01 §3.2):核销是 STAFF 在页面上先看到预约详情(已读到 version)再点核销,带 version 能挡"页面数据已过期"的误操作,语义有价值。**这个不对称是刻意的,不是漏写**——01 §3.2 与本节已对齐。
 
-`occupy:{rno}` 由消费者成功后 `DEL`(或 TTL 自然清,见 §一);M1 下取消/过期无需额外清 occupy——预约已落库,B 类路径读 DB 不读 occupy。dup 不删(TTL 自然过期,§1.1)。`slot:full` 不删(名额不返还,没有新名额可约)。
+`occupy:{rno}` 由消费者成功后 `DEL`(**没有"TTL 自然清"这条路** —— occupy 无 TTL,见 §1.3:只有成功落库与 10.2a 两个删除者);M1 下取消/过期无需额外清 occupy——预约已落库,B 类路径读 DB 不读 occupy。dup 不删(TTL 自然过期,§1.1)。`slot:full` 不删(名额不返还,没有新名额可约)。
 
 > ⚠️ **B 类与 A 类的 `slot:full` 处理刚好相反**,别搞混:A 类(10.2a)回补桶 → **必须 DEL slot:full**;B 类(取消/过期)不回补桶 → **不能 DEL slot:full**(删了会让前端显示"可约"但实际桶为 0,用户点进去必失败)。判据统一为:**「桶余量是否从 0 变正」——是则删标记,否则不动。**
 

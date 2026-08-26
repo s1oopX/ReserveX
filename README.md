@@ -52,7 +52,7 @@ docker compose up --build
 
 | 路径 | 内容 |
 |---|---|
-| `docker-compose.yml` | 9 个服务,含一次性 `mysql-migrate` / `rmq-init` / `frontend-build` |
+| `docker-compose.yml` | 15 个服务:6 个常驻(mysql/redis/rmqnamesrv/rmqbroker/backend/caddy)+ 3 个一次性(`mysql-migrate`/`rmq-init`/`frontend-build`)+ 6 个可观测(prometheus/alertmanager/redis-exporter/loki/alloy/grafana) |
 | `docker/mysql/` | 初始化 DDL/种子与 `migrations/` 已有卷迁移 |
 | `docker/rocketmq/topics.sh` | 显式建 3 个业务 topic + 3 个 DLQ topic并设队列数 |
 | `caddy/Caddyfile` | 统一入口:静态资源 + `/api` 反代 + 屏蔽 `/actuator` |

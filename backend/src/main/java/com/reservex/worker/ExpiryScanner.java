@@ -30,7 +30,9 @@ import java.time.format.DateTimeFormatter;
  * <p>⚠️ {@code now} 由应用层按 {@code reservex.zone} 传入,**不用 SQL NOW()}(见
  * 容器时区漏配成 UTC 时 SQL NOW() 早 8h,会把当天还有效的预约全刷成 EXPIRED)。
  *
- * <p>不碰 occupy:occupy TTL 30min 自动过期,过期状态的主要消费者是 DB 侧列表与对账。
+ * <p>不碰 occupy:它是扣减后的恢复证据,**刻意无 TTL**,删除权只属于成功落库的消费者
+ * 与补偿脚本(见 grab.lua / compensate.lua)。过期状态的主要消费者是 DB 侧列表与对账;
+ * 在途预约的过期由消费者读 occupy 的 {@code expired} 标记落成 status=3,不靠 key 自然消失。
  */
 @Slf4j
 @Component

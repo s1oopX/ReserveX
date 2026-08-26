@@ -15,9 +15,10 @@ public interface StuckReservationMapper extends BaseMapper<StuckReservation> {
     /**
      * 入表。主键 {@code reservation_no} 天然幂等 —— scanner 反复扫到同一笔只留一条。
      *
-     * <p>⚠️ <b>必须在 occupy 还没过 TTL 时写</b>:{@code bucket_key} / {@code dup_key}
-     * 只存在于 occupy 载荷里,TTL 一过就再也拿不到,桶余量将永久泄漏
-     * (见 {@link StuckReservation} 类注释)。
+     * <p>⚠️ <b>必须在 occupy 还在时写</b>:{@code bucket_key} / {@code dup_key}
+     * 只存在于 occupy 载荷里。occupy 无 TTL 不会自然消失,但它一旦因 Redis 侧
+     * 丢数据或误删而不见,桶余量将永久泄漏(见 {@link StuckReservation} 类注释)。
+     * {@code PendingScanner.toStuck} 因此在写表前先断言 occupy 仍存在。
      *
      * @return 0 表示已入表过
      */
