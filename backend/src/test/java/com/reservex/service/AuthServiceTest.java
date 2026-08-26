@@ -178,7 +178,10 @@ class AuthServiceTest {
         when(redis.opsForValue()).thenReturn(values);
 
         String token = "0123456789abcdef0123456789abcdef";
-        when(values.getAndDelete("satoken:password-once:" + token)).thenReturn("42", null);
+        // 链式而非 thenReturn("42", null):末位 null 会触发 javac 的
+        // non-varargs call 告警。首次取到、二次为空(一次性 token)语义不变。
+        when(values.getAndDelete("satoken:password-once:" + token))
+                .thenReturn("42").thenReturn(null);
 
         User user = new User();
         user.setUserId(42L);

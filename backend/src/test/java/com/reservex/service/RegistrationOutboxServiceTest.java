@@ -104,7 +104,9 @@ class RegistrationOutboxServiceTest {
         when(f.emailRoutes.selectById("person@example.com")).thenReturn(email(11L));
         when(f.phoneRoutes.selectById("13800138000")).thenReturn(phone(11L));
         when(f.identities.selectById("hash")).thenReturn(identity(11L));
-        when(f.users.selectById(11L)).thenReturn(null, null);
+        // 链式而非 thenReturn(null, null):后者的末位 null 会被 javac 当成
+        // 可能的 varargs 数组本身,报 non-varargs call 告警。语义完全相同。
+        when(f.users.selectById(11L)).thenReturn(null).thenReturn(null);
         when(f.users.insert(any(User.class))).thenThrow(new IllegalStateException("ds down"));
 
         assertFalse(f.service.ensureUser(11L));
