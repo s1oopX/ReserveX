@@ -197,16 +197,6 @@ hash,全局唯一直接失效。代价是 pepper 进了配额表主键,**不可�
 ### 4.1 抢号链路
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': { 'clusterBkg': '#ffffff', 'clusterBorder': '#d0d7de', 'primaryColor': '#f6f8fa', 'primaryBorderColor': '#d0d7de', 'lineColor': '#6e7681' }}}%%
-flowchart LR
-    classDef default fill:#f6f8fa,stroke:#d0d7de,stroke-width:1.5px,color:#1f2328,rx:4px,ry:4px;
-    classDef decision fill:#f0f6fc,stroke:#58a6ff,stroke-width:1.5px,color:#0969da;
-    classDef reject fill:#fff0f2,stroke:#f85149,stroke-width:1.2px,color:#8e1519,rx:4px,ry:4px;
-    classDef success fill:#e6ffed,stroke:#2da44e,stroke-width:1.5px,color:#1a7f37,rx:4px,ry:4px;
-    classDef asyncStage fill:#e1f5fe,stroke:#0288d1,stroke-width:1.5px,color:#01579b,rx:4px,ry:4px;
-
-    %% 阶段一：前置准入
-    ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'edgeLabelBackground': '#ffffff', 'mainBkg': '#ffffff', 'lineColor': '#64748b' }}}%%
 flowchart LR
     classDef default fill:#ffffff,stroke:#334155,stroke-width:1.5px,color:#0f172a,rx:4px,ry:4px;
