@@ -69,28 +69,23 @@ compensation and four reconciliation jobs.*
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'edgeLabelBackground': '#ffffff', 'mainBkg': '#ffffff', 'lineColor': '#64748b' }}}%%
 flowchart TB
-    classDef client fill:#ffffff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af,rx:5px,ry:5px;
-    classDef edge fill:#ffffff,stroke:#2563eb,stroke-width:1.5px,color:#1d4ed8,rx:5px,ry:5px;
     classDef app fill:#ffffff,stroke:#334155,stroke-width:1.5px,color:#0f172a,rx:5px,ry:5px;
     classDef redis fill:#ffffff,stroke:#ef4444,stroke-width:1.5px,color:#b91c1c,rx:5px,ry:5px;
     classDef mq fill:#ffffff,stroke:#f59e0b,stroke-width:1.5px,color:#b45309,rx:5px,ry:5px;
     classDef db fill:#ffffff,stroke:#64748b,stroke-width:1.5px,color:#334155,rx:5px,ry:5px;
 
-    %% 统一边界入口
-    U["游客 / 管理员"]:::client
-    API["Caddy 边缘网关 ➔ Spring Boot 3.5 API (43 端点 · Java 21)"]:::app
+    %% 顶层接入 (单行整合)
+    API["边界接入 · Caddy 网关 ➔ Spring Boot 3.5 API (43 端点 · Java 21)"]:::app
 
-    %% 中间件双路分流 (单屏并列)
+    %% 中间件分流 (双柱并列)
     REDIS["Redis 7 (原子预占引擎)<br/>Lua 脚本集 (×6) · 桶余量 · occupy · pending ZSet"]:::redis
     MQ["RocketMQ 5.5 (削峰落库)<br/>Topic: reservation-created ➔ MQ 异步消费者"]:::mq
 
-    %% 持久化与对账闭环
+    %% 底层持久化与对账
     JOB["定时任务调度 (16 个任务 · 四类对账)"]:::app
     DB[("MySQL 8 (多数据源 · ds0/ds1 分库 · single 审计)")]:::db
 
-    %% 极简单屏流转
-    U --> API
-
+    %% 紧凑流转 (全图严格 3 层高度)
     API -->|"2 RTT 预占"| REDIS
     API -->|"同步发消息"| MQ
 
@@ -204,31 +199,27 @@ hash,全局唯一直接失效。代价是 pepper 进了配额表主键,**不可�
 %%{init: {'theme': 'base', 'themeVariables': { 'edgeLabelBackground': '#ffffff', 'mainBkg': '#ffffff', 'lineColor': '#64748b' }}}%%
 flowchart TB
     classDef default fill:#ffffff,stroke:#334155,stroke-width:1.5px,color:#0f172a,rx:4px,ry:4px;
-    classDef decision fill:#ffffff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af,rx:4px,ry:4px;
     classDef reject fill:#ffffff,stroke:#ef4444,stroke-width:1.5px,color:#b91c1c,rx:4px,ry:4px;
     classDef success fill:#ffffff,stroke:#10b981,stroke-width:1.5px,color:#047857,rx:4px,ry:4px;
     classDef asyncStage fill:#ffffff,stroke:#0284c7,stroke-width:1.5px,color:#0369a1,rx:4px,ry:4px;
 
-    %% 阶段一：前置只读准入 (顶部)
-    S["元数据读取 (HGETALL) ➔ 时效与放号校验 ➔ 分桶路由计算"]:::default
-    E1["准入拦截 (404 / 倒计时 / 过期)"]:::reject
+    %% 阶段一：前置只读准入 (顶层)
+    S["阶段一 · JVM 前置准入 (HGETALL · 时效放号校验 ➔ 分桶路由)"]:::default
+    E1["准入拦截 (404/倒计时/过期)"]:::reject
 
-    %% 阶段二：Lua 原子判扣内核 (中部)
-    L2["双维限流 ➔ SETNX 判重 ➔ 主桶/借桶扣减"]:::decision
-    X2["熔断退出 (返 -2 限流 / -1 重复 / 0 售罄)"]:::reject
-    OK2["扣减成功 · 返 1 (写 occupy 满载荷 · ZADD pending)"]:::success
+    %% 阶段二：Lua 原子判扣内核 (中层)
+    L2["阶段二 · Redis 7 grab.lua 原子判扣 (双维限流 ➔ SETNX 判重 ➔ 扣减成功 · 返 1)"]:::success
+    X2["熔断退出 (限流/已占/售罄)"]:::reject
 
-    %% 阶段三：异步持久化闭环 (底部)
-    MQ["RocketMQ 事务消息 ➔ 消费者五阶段异步落库 (ds0/ds1)"]:::asyncStage
+    %% 阶段三：异步持久化闭环 (底层)
+    MQ["阶段三 · RocketMQ 事务消息 ➔ 消费者五阶段异步落库 (ds0/ds1)"]:::asyncStage
 
-    %% 阶段流转
+    %% 紧凑三阶流转
     S -->|"未通过"| E1
     S ==>|"单次网络 RTT"| L2
 
-    L2 -->|"超限/已占/售罄"| X2
-    L2 -->|"扣减成功"| OK2
-
-    OK2 ==>|"预占成功"| MQ
+    L2 -->|"超限/售罄"| X2
+    L2 ==>|"预占成功"| MQ
 ```
 
 
