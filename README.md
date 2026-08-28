@@ -65,34 +65,47 @@ compensation and four reconciliation jobs.*
 面向的读者有两类:要评估系统设计的人看第二至六节;要跑起来的人直接跳第八节。
 
 ### 系统架构
+
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'edgeLabelBackground': '#ffffff', 'mainBkg': '#ffffff', 'lineColor': '#64748b' }}}%%
-flowchart LR
+flowchart TB
     classDef client fill:#ffffff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af,rx:5px,ry:5px;
+    classDef edge fill:#ffffff,stroke:#2563eb,stroke-width:1.5px,color:#1d4ed8,rx:5px,ry:5px;
     classDef app fill:#ffffff,stroke:#334155,stroke-width:1.5px,color:#0f172a,rx:5px,ry:5px;
     classDef redis fill:#ffffff,stroke:#ef4444,stroke-width:1.5px,color:#b91c1c,rx:5px,ry:5px;
     classDef mq fill:#ffffff,stroke:#f59e0b,stroke-width:1.5px,color:#b45309,rx:5px,ry:5px;
     classDef db fill:#ffffff,stroke:#64748b,stroke-width:1.5px,color:#334155,rx:5px,ry:5px;
 
-    %% 边界接入
-    USER["游客 / 管理员"]:::client
-    API["Caddy 网关 ➔ Spring Boot API<br/>(43 端点 · Java 21)"]:::app
+    %% 统一边界入口 (顶部)
+    U["游客 / 管理员"]:::client
+    C["Caddy 网关 (静态托管 / 反代 / 屏蔽 /actuator)"]:::edge
+    API["REST API 入口 (43 端点 · Spring Boot 3.5 / Java 21)"]:::app
 
-    %% 中间件分流
-    LUA_ENGINE["Redis 7 (原子预占引擎)<br/>Lua 脚本集 (×6) · 桶扣减 · occupy · pending"]:::redis
-    MQ_ENGINE["RocketMQ 5.5 (削峰落库)<br/>Topic: reservation-created ➔ 异步消费者"]:::mq
+    %% 左路通道：同步原子预占
+    L["Lua 原子脚本集 (×6)<br/>扣减 · 判重 · 借桶 · 限流"]:::redis
+    K["桶余量 · occupy · pending ZSet"]:::redis
 
-    %% 持久化与对账
-    JOB_NODE["定时调度 (16 任务 · 四类对账)"]:::app
-    DB_NODE[("MySQL 8 (多数据源)<br/>ds0/ds1 分库 · single 路由审计")]:::db
+    %% 右路通道：异步削峰落库
+    T["RocketMQ 5.5 (Topic: reservation-created)"]:::mq
+    CON["MQ 异步消费者<br/>批量落库 · 状态推进 · 补偿回滚"]:::app
 
-    %% 流转走向 (纯横向极简无框)
-    USER --> API
-    API -->|"2 RTT 预占"| LUA_ENGINE
-    API -->|"异步削峰"| MQ_ENGINE
-    LUA_ENGINE -->|"对账巡检"| JOB_NODE
-    MQ_ENGINE -->|"批量落库"| DB_NODE
-    JOB_NODE -->|"核验审计"| DB_NODE
+    %% 底层对账与存储
+    JOB["定时任务调度 (16 个任务 · 四类对账)"]:::app
+    DB[("MySQL 8 (多数据源)<br/>ds0/ds1 分库 · single 路由审计")]:::db
+
+    %% 顶层流转
+    U --> C --> API
+
+    %% 核心分流 (左路与右路)
+    API -->|"2 RTT 预占"| L
+    L --> K
+    K -->|"对账巡检"| JOB
+    JOB -->|"核验与审计"| DB
+
+    API -->|"同步发消息"| T
+    T -->|"推拉消费"| CON
+    CON --> DB
+    CON -.->|"业务失败"| T
 ```
 
 抢号请求只经过 Caddy → API → Redis 两次 round-trip 即返回;落库由消费者异步完成,
@@ -198,29 +211,45 @@ hash,全局唯一直接失效。代价是 pepper 进了配额表主键,**不可�
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'edgeLabelBackground': '#ffffff', 'mainBkg': '#ffffff', 'lineColor': '#64748b' }}}%%
-flowchart LR
+flowchart TB
     classDef default fill:#ffffff,stroke:#334155,stroke-width:1.5px,color:#0f172a,rx:4px,ry:4px;
     classDef decision fill:#ffffff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af,rx:4px,ry:4px;
     classDef reject fill:#ffffff,stroke:#ef4444,stroke-width:1.5px,color:#b91c1c,rx:4px,ry:4px;
     classDef success fill:#ffffff,stroke:#10b981,stroke-width:1.5px,color:#047857,rx:4px,ry:4px;
     classDef asyncStage fill:#ffffff,stroke:#0284c7,stroke-width:1.5px,color:#0369a1,rx:4px,ry:4px;
 
-    %% 阶段一：前置准入
-    S1["元数据读取 (HGETALL)"]:::default --> C1{"时效与放号校验"}:::decision
-    C1 -->|通过| R1["分桶路由计算"]:::default
-    C1 -->|未通过| E1["拦截 (404/倒计时/过期)"]:::reject
+    %% 阶段一：前置只读准入 (顶部)
+    S["元数据读取 (HGETALL slot:meta)"]:::default
+    Q1{"准入与时效校验 (存在 · 放号 · 有效?)"}:::decision
+    E1["拦截: 404 / 倒计时 / 过期"]:::reject
+    R["计算分桶路由 (hash % bucket)"]:::default
 
-    %% 阶段二：Lua 原子判扣
-    L2["双维限流 ➔ SETNX 判重 ➔ 主桶/借桶扣减"]:::decision
-    L2 -->|扣减成功| OK2["扣减成功 · 返 1 (写 occupy + ZSet)"]:::success
-    L2 -->|超限/重复/售罄| X2["熔断退出 (返 -2 / -1 / 0)"]:::reject
+    %% 阶段二：Lua 原子判扣内核 (中部)
+    G1{"双维限流 & SETNX 判重"}:::decision
+    X1["拦截退出 (返 -2 限流 / -1 重复)"]:::reject
+    G2{"主桶扣减 / 环形借桶扫描"}:::decision
+    X2["售罄标记 (返 0)"]:::reject
+    OK["扣减成功 · 返 1<br/>写 occupy 满载荷 · ZADD pending"]:::success
 
-    %% 阶段三：异步落库
-    M3["Topic: reservation-created 事务消息"]:::asyncStage --> C3["消费者五阶段落库 (ds0/ds1)"]:::asyncStage
+    %% 阶段三：异步持久化闭环 (底部)
+    MQ["RocketMQ 事务消息 (Topic: reservation-created)"]:::asyncStage
+    CON["消费者五阶段异步落库 (ds0/ds1)"]:::asyncStage
 
-    %% 阶段主干贯通
-    R1 ==>|"单次 RTT"| L2
-    OK2 ==>|"预占成功"| M3
+    %% 阶段一流转
+    S --> Q1
+    Q1 -->|未通过| E1
+    Q1 -->|通过| R
+
+    %% 进入阶段二 (单次 RTT)
+    R ==>|"单次网络 RTT"| G1
+    G1 -->|超限/重复| X1
+    G1 -->|通过| G2
+    G2 -->|全部为空| X2
+    G2 -->|成功/借桶| OK
+
+    %% 进入阶段三 (落库闭环)
+    OK ==>|"预占成功"| MQ
+    MQ --> CON
 ```
 
 
