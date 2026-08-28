@@ -76,36 +76,27 @@ flowchart TB
     classDef mq fill:#ffffff,stroke:#f59e0b,stroke-width:1.5px,color:#b45309,rx:5px,ry:5px;
     classDef db fill:#ffffff,stroke:#64748b,stroke-width:1.5px,color:#334155,rx:5px,ry:5px;
 
-    %% 统一边界入口 (顶部)
+    %% 统一边界入口
     U["游客 / 管理员"]:::client
-    C["Caddy 网关 (静态托管 / 反代 / 屏蔽 /actuator)"]:::edge
-    API["REST API 入口 (43 端点 · Spring Boot 3.5 / Java 21)"]:::app
+    API["Caddy 边缘网关 ➔ Spring Boot 3.5 API (43 端点 · Java 21)"]:::app
 
-    %% 左路通道：同步原子预占
-    L["Lua 原子脚本集 (×6)<br/>扣减 · 判重 · 借桶 · 限流"]:::redis
-    K["桶余量 · occupy · pending ZSet"]:::redis
+    %% 中间件双路分流 (单屏并列)
+    REDIS["Redis 7 (原子预占引擎)<br/>Lua 脚本集 (×6) · 桶余量 · occupy · pending ZSet"]:::redis
+    MQ["RocketMQ 5.5 (削峰落库)<br/>Topic: reservation-created ➔ MQ 异步消费者"]:::mq
 
-    %% 右路通道：异步削峰落库
-    T["RocketMQ 5.5 (Topic: reservation-created)"]:::mq
-    CON["MQ 异步消费者<br/>批量落库 · 状态推进 · 补偿回滚"]:::app
-
-    %% 底层对账与存储
+    %% 持久化与对账闭环
     JOB["定时任务调度 (16 个任务 · 四类对账)"]:::app
-    DB[("MySQL 8 (多数据源)<br/>ds0/ds1 分库 · single 路由审计")]:::db
+    DB[("MySQL 8 (多数据源 · ds0/ds1 分库 · single 审计)")]:::db
 
-    %% 顶层流转
-    U --> C --> API
+    %% 极简单屏流转
+    U --> API
 
-    %% 核心分流 (左路与右路)
-    API -->|"2 RTT 预占"| L
-    L --> K
-    K -->|"对账巡检"| JOB
-    JOB -->|"核验与审计"| DB
+    API -->|"2 RTT 预占"| REDIS
+    API -->|"同步发消息"| MQ
 
-    API -->|"同步发消息"| T
-    T -->|"推拉消费"| CON
-    CON --> DB
-    CON -.->|"业务失败"| T
+    REDIS -->|"对账巡检"| JOB
+    MQ -->|"批量落库"| DB
+    JOB -->|"核验审计"| DB
 ```
 
 抢号请求只经过 Caddy → API → Redis 两次 round-trip 即返回;落库由消费者异步完成,
@@ -219,37 +210,25 @@ flowchart TB
     classDef asyncStage fill:#ffffff,stroke:#0284c7,stroke-width:1.5px,color:#0369a1,rx:4px,ry:4px;
 
     %% 阶段一：前置只读准入 (顶部)
-    S["元数据读取 (HGETALL slot:meta)"]:::default
-    Q1{"准入与时效校验 (存在 · 放号 · 有效?)"}:::decision
-    E1["拦截: 404 / 倒计时 / 过期"]:::reject
-    R["计算分桶路由 (hash % bucket)"]:::default
+    S["元数据读取 (HGETALL) ➔ 时效与放号校验 ➔ 分桶路由计算"]:::default
+    E1["准入拦截 (404 / 倒计时 / 过期)"]:::reject
 
     %% 阶段二：Lua 原子判扣内核 (中部)
-    G1{"双维限流 & SETNX 判重"}:::decision
-    X1["拦截退出 (返 -2 限流 / -1 重复)"]:::reject
-    G2{"主桶扣减 / 环形借桶扫描"}:::decision
-    X2["售罄标记 (返 0)"]:::reject
-    OK["扣减成功 · 返 1<br/>写 occupy 满载荷 · ZADD pending"]:::success
+    L2["双维限流 ➔ SETNX 判重 ➔ 主桶/借桶扣减"]:::decision
+    X2["熔断退出 (返 -2 限流 / -1 重复 / 0 售罄)"]:::reject
+    OK2["扣减成功 · 返 1 (写 occupy 满载荷 · ZADD pending)"]:::success
 
     %% 阶段三：异步持久化闭环 (底部)
-    MQ["RocketMQ 事务消息 (Topic: reservation-created)"]:::asyncStage
-    CON["消费者五阶段异步落库 (ds0/ds1)"]:::asyncStage
+    MQ["RocketMQ 事务消息 ➔ 消费者五阶段异步落库 (ds0/ds1)"]:::asyncStage
 
-    %% 阶段一流转
-    S --> Q1
-    Q1 -->|未通过| E1
-    Q1 -->|通过| R
+    %% 阶段流转
+    S -->|"未通过"| E1
+    S ==>|"单次网络 RTT"| L2
 
-    %% 进入阶段二 (单次 RTT)
-    R ==>|"单次网络 RTT"| G1
-    G1 -->|超限/重复| X1
-    G1 -->|通过| G2
-    G2 -->|全部为空| X2
-    G2 -->|成功/借桶| OK
+    L2 -->|"超限/已占/售罄"| X2
+    L2 -->|"扣减成功"| OK2
 
-    %% 进入阶段三 (落库闭环)
-    OK ==>|"预占成功"| MQ
-    MQ --> CON
+    OK2 ==>|"预占成功"| MQ
 ```
 
 
