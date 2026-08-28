@@ -468,7 +468,6 @@ cd frontend && npm install && npm run dev  # vite 代理 /api 到 localhost:8080
 | [07-页面与闭环](docs/07-页面与闭环.md) | 三前端与六条业务闭环 |
 | [08-部署与工程](docs/08-部署与工程.md) | compose、可观测、编码红线 |
 | [09-压测与验收](docs/09-压测与验收.md) | 验收矩阵与故障注入 |
-| [10-简历与面试](docs/10-简历与面试.md) | 追问预案与诚实口径 |
 
 ---
 
