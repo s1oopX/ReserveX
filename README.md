@@ -65,46 +65,77 @@ compensation and four reconciliation jobs.*
 面向的读者有两类:要评估系统设计的人看第二至六节;要跑起来的人直接跳第八节。
 
 ### 系统架构
-
 ```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': { 'clusterBkg': '#ffffff', 'clusterBorder': '#d0d7de', 'primaryColor': '#f6f8fa', 'primaryBorderColor': '#d0d7de', 'lineColor': '#6e7681' }}}%%
 flowchart TB
-    subgraph edge["边缘层"]
-        C["Caddy<br/>静态托管 · /api 反代 · 屏蔽 /actuator"]
+    %% 节点专属配色类
+    classDef client fill:#f6f8fa,stroke:#d0d7de,stroke-width:1.5px,color:#1f2328,rx:5px,ry:5px;
+    classDef edge fill:#e6f4ff,stroke:#58a6ff,stroke-width:1.5px,color:#0969da,rx:5px,ry:5px;
+    classDef app fill:#f0f6fc,stroke:#30363d,stroke-width:1.5px,color:#24292e,rx:5px,ry:5px;
+    classDef redis fill:#fff0f2,stroke:#f85149,stroke-width:1.5px,color:#8e1519,rx:5px,ry:5px;
+    classDef mq fill:#fff9eb,stroke:#d4a72c,stroke-width:1.5px,color:#7d4e00,rx:5px,ry:5px;
+    classDef db fill:#f3f4f6,stroke:#6e7681,stroke-width:1.5px,color:#24292f,rx:5px,ry:5px;
+
+    %% 1. 接入层
+    subgraph S_INGRESS ["1. 边界接入与请求入口"]
+        U["游客 / 管理员"]:::client
+        C["Caddy 网关 (静态托管 / 反代 / 屏蔽 /actuator)"]:::edge
+        API["REST API 入口 (43 端点 · Spring Boot 3.5 / Java 21)"]:::app
     end
 
-    subgraph app["应用层 · 单进程模块化单体"]
-        API["REST API<br/>43 端点"]
-        CON["MQ 消费者<br/>落库 · 补偿 · 过期"]
-        JOB["定时任务<br/>16 个 · 放号/对账/扫描"]
+    %% 2. 中间件与状态层 (左右分立)
+    subgraph S_MIDDLE ["2. 高并发分流中间件"]
+        subgraph G_REDIS ["Redis 7 (原子预占引擎)"]
+            direction TB
+            L["Lua 原子脚本集 (×6)<br/>扣减 · 判重 · 借桶 · 限流"]:::redis
+            K["桶余量 · occupy · pending ZSet · slot:meta"]:::redis
+        end
+
+        subgraph G_MQ ["RocketMQ 5.5 (削峰队列)"]
+            T["Topic: reservation-created<br/>compensate-rollback · timeout"]:::mq
+        end
     end
 
-    subgraph cache["Redis 7"]
-        L["Lua 原子脚本 ×6<br/>扣减 · 判重 · 借桶 · 限流"]
-        K["桶余量 · occupy · dup<br/>pending ZSet · slot:meta"]
+    %% 3. 处理与对账层 (左右对齐)
+    subgraph S_PROCESS ["3. 异步处理与对账引擎"]
+        JOB["定时任务调度 (16 个任务)<br/>放号 / 状态扫描 / 四类对账"]:::app
+        CON["MQ 异步消费者<br/>批量落库 · 状态推进 · 补偿回滚"]:::app
     end
 
-    subgraph mq["RocketMQ 5.5"]
-        T["reservation-created<br/>compensate-rollback<br/>timeout"]
+    %% 4. 持久层
+    subgraph G_DB ["4. MySQL 8 (多数据源持久层)"]
+        direction LR
+        DS[("single (路由/审计/对账)")]:::db
+        D0[("ds0 (分片0)")]:::db
+        D1[("ds1 (分片1)")]:::db
     end
 
-    subgraph db["MySQL 8 · 三数据源"]
-        D0[("ds0<br/>user/reservation")]
-        D1[("ds1<br/>user/reservation")]
-        DS[("single<br/>路由 · 审计 · 对账")]
-    end
+    %% 链路走向：严格从上到下，左路走缓存，右路走消息
+    U --> C --> API
 
-    U["游客 / 工作人员 / 管理员"] --> C --> API
-    API -->|"2 round-trip"| L
-    L --- K
-    API -->|同步发送| T
-    T --> CON
-    CON --> D0 & D1 & DS
-    JOB -->|"四类对账"| K
-    JOB --> DS
-    CON -->|"业务失败"| T
+    %% 左路通道：同步原子预占
+    API -->|"2 RTT 预占"| L
+    L --> K
+    K -->|"对账巡检"| JOB
+    JOB -->|"核验与审计"| DS
 
-    style L fill:#dc382d,color:#fff
-    style T fill:#d77310,color:#fff
+    %% 右路通道：异步削峰落库
+    API -->|"同步发消息"| T
+    T -->|"推拉消费"| CON
+    CON --> D0
+    CON --> D1
+    CON --> DS
+
+    %% 异常补偿与回滚
+    CON -.->|"业务失败"| T
+
+    %% 显式重写所有外框底色，强制干掉黄色
+    style S_INGRESS fill:#ffffff,stroke:#d0d7de,stroke-width:1px
+    style S_MIDDLE fill:#ffffff,stroke:#d0d7de,stroke-width:1px
+    style G_REDIS fill:#ffffff,stroke:#f85149,stroke-width:1px
+    style G_MQ fill:#ffffff,stroke:#d4a72c,stroke-width:1px
+    style S_PROCESS fill:#ffffff,stroke:#d0d7de,stroke-width:1px
+    style G_DB fill:#ffffff,stroke:#d0d7de,stroke-width:1px
 ```
 
 抢号请求只经过 Caddy → API → Redis 两次 round-trip 即返回;落库由消费者异步完成,
@@ -209,34 +240,87 @@ hash,全局唯一直接失效。代价是 pepper 进了配额表主键,**不可�
 ### 4.1 抢号链路
 
 ```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': { 'clusterBkg': '#ffffff', 'clusterBorder': '#d0d7de', 'primaryColor': '#f6f8fa', 'primaryBorderColor': '#d0d7de', 'lineColor': '#6e7681' }}}%%
 flowchart TD
-    S["读 slot:meta<br/>一次 HGETALL 拿全 7 字段"] --> Q1{"空值标记?"}
-    Q1 -->|存在| E1["场次不存在<br/>不打 DB"]
-    Q1 -->|无| Q2{"released?"}
-    Q2 -->|0| E2["未放号 + 倒计时"]
-    Q2 -->|1| Q3{"valid_until > now?"}
-    Q3 -->|否| E3["已结束"]
-    Q3 -->|是| R["算桶路由<br/>hash(rno) % bucket_count"]
+    %% 统一现代工业级配色规范
+    classDef default fill:#f6f8fa,stroke:#d0d7de,stroke-width:1.5px,color:#1f2328,rx:4px,ry:4px;
+    classDef decision fill:#f0f6fc,stroke:#58a6ff,stroke-width:1.5px,color:#0969da;
+    classDef reject fill:#fff0f2,stroke:#f85149,stroke-width:1.2px,color:#8e1519,rx:4px,ry:4px;
+    classDef success fill:#e6ffed,stroke:#2da44e,stroke-width:1.5px,color:#1a7f37,rx:4px,ry:4px;
+    classDef luaCore fill:#fbf0ea,stroke:#d4a72c,stroke-width:1.5px,color:#7d4e00,rx:6px,ry:6px;
+    classDef asyncStage fill:#e1f5fe,stroke:#0288d1,stroke-width:1.5px,color:#01579b,rx:4px,ry:4px;
 
-    R --> LUA["grab.lua · 单次 EVAL · 原子"]
+    %% 阶段一：前置只读准入校验
+    subgraph STAGE_1 ["阶段一 · JVM 前置只读校验 (一次 HGETALL slot:meta)"]
+        S["读取场次元数据 (7 字段)"]
+        Q1{"空值标记?"}:::decision
+        E1["拦截: 场次不存在 (零 DB 穿透)"]:::reject
+        
+        Q2{"是否已放号<br/>released == 1?"}:::decision
+        E2["拦截: 未放号 (返回倒计时)"]:::reject
+        
+        Q3{"场次是否有效<br/>valid_until > now?"}:::decision
+        E3["拦截: 场次已结束"]:::reject
+        
+        R["计算分桶路由<br/>hash(rno) % bucket_count"]
+    end
 
-    LUA --> G1{"限流<br/>user / slot 两维"}
-    G1 -->|超限| X1["返 -2<br/>零副作用"]
-    G1 -->|通过| G2{"SET NX dup"}
-    G2 -->|已存在| X2["返 -1 配额已用"]
-    G2 -->|成功| G3{"主桶有余量?"}
-    G3 -->|有| OK["扣减 + 写 occupy 满载荷<br/>+ ZADD pending · 返 1"]
-    G3 -->|无| G4{"环形借桶<br/>有余量?"}
-    G4 -->|有| OK
-    G4 -->|全空| X3["写售罄标记<br/>+ 回滚判重位 · 返 0"]
+    %% 阶段二：Lua 原子执行内核
+    subgraph STAGE_2 ["阶段二 · grab.lua 单次 EVAL 原子判扣内核 (Redis 7)"]
+        LUA["grab.lua 原子上下文"]:::luaCore
+        
+        G1{"双维限流校验<br/>user / slot"}:::decision
+        X1["返 -2: 触发限流 (零副作用)"]:::reject
+        
+        G2{"SET NX 判重位"}:::decision
+        X2["返 -1: 重复抢号 / 配额已用"]:::reject
+        
+        G3{"主路由桶余量 > 0?"}:::decision
+        G4{"环形借桶扫描<br/>是否有剩余余量?"}:::decision
+        X3["返 0: 售罄 (写 soldout 标记 + 回滚判重位)"]:::reject
+        
+        OK["扣减成功 · 返 1<br/>• 扣减对应桶余量<br/>• 写入 occupy 满载荷<br/>• ZADD 加入 pending ZSet"]:::success
+    end
 
-    OK --> MQ["同步发送 reservation-created"]
-    MQ --> CON["消费者五阶段落库"]
+    %% 阶段三：异步削峰落库
+    subgraph STAGE_3 ["阶段三 · 异步持久化闭环 (RocketMQ + MySQL)"]
+        MQ["同步投递 MQ 事务消息<br/>Topic: reservation-created"]:::asyncStage
+        CON["消费者执行五阶段落库<br/>(分库写入 ds0/ds1 + 清除 Pending 标记)"]:::asyncStage
+    end
 
-    style LUA fill:#dc382d,color:#fff
-    style OK fill:#2d7d3f,color:#fff
-    style MQ fill:#d77310,color:#fff
+    %% 阶段一流转
+    S --> Q1
+    Q1 -->|存在| E1
+    Q1 -->|无| Q2
+    Q2 -->|未放号| E2
+    Q2 -->|已放号| Q3
+    Q3 -->|已过期| E3
+    Q3 -->|有效| R
+
+    %% 跨阶段：进入 Lua 脚本
+    R ==>|单次网络 RTT 调用| LUA
+
+    %% 阶段二流转
+    LUA --> G1
+    G1 -->|超限| X1
+    G1 -->|通过| G2
+    G2 -->|已存在| X2
+    G2 -->|成功| G3
+    G3 -->|主桶有余量| OK
+    G3 -->|主桶已空| G4
+    G4 -->|借桶成功| OK
+    G4 -->|全桶为空| X3
+
+    %% 跨阶段：进入 MQ
+    OK ==>|预占成功| MQ
+    MQ --> CON
+
+    %% 消除外框默认黄色
+    style STAGE_1 fill:#ffffff,stroke:#d0d7de,stroke-width:1px
+    style STAGE_2 fill:#ffffff,stroke:#d0d7de,stroke-width:1px
+    style STAGE_3 fill:#ffffff,stroke:#d0d7de,stroke-width:1px
 ```
+
 
 状态校验前置在应用层而不是 Lua 内:业务分支清晰(三种返回各带倒计时),且不污染原子扣减脚本。
 
