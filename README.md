@@ -66,56 +66,33 @@ compensation and four reconciliation jobs.*
 
 ### 系统架构
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': { 'clusterBkg': '#ffffff', 'clusterBorder': '#d0d7de', 'primaryColor': '#f6f8fa', 'primaryBorderColor': '#d0d7de', 'lineColor': '#6e7681' }}}%%
+%%{init: {'theme': 'base', 'themeVariables': { 'edgeLabelBackground': '#ffffff', 'mainBkg': '#ffffff', 'lineColor': '#64748b' }}}%%
 flowchart LR
-    %% 节点专属配色类
-    classDef client fill:#f6f8fa,stroke:#d0d7de,stroke-width:1.5px,color:#1f2328,rx:5px,ry:5px;
-    classDef edge fill:#e6f4ff,stroke:#58a6ff,stroke-width:1.5px,color:#0969da,rx:5px,ry:5px;
-    classDef app fill:#f0f6fc,stroke:#30363d,stroke-width:1.5px,color:#24292e,rx:5px,ry:5px;
-    classDef redis fill:#fff0f2,stroke:#f85149,stroke-width:1.5px,color:#8e1519,rx:5px,ry:5px;
-    classDef mq fill:#fff9eb,stroke:#d4a72c,stroke-width:1.5px,color:#7d4e00,rx:5px,ry:5px;
-    classDef db fill:#f3f4f6,stroke:#6e7681,stroke-width:1.5px,color:#24292f,rx:5px,ry:5px;
+    classDef client fill:#ffffff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af,rx:5px,ry:5px;
+    classDef app fill:#ffffff,stroke:#334155,stroke-width:1.5px,color:#0f172a,rx:5px,ry:5px;
+    classDef redis fill:#ffffff,stroke:#ef4444,stroke-width:1.5px,color:#b91c1c,rx:5px,ry:5px;
+    classDef mq fill:#ffffff,stroke:#f59e0b,stroke-width:1.5px,color:#b45309,rx:5px,ry:5px;
+    classDef db fill:#ffffff,stroke:#64748b,stroke-width:1.5px,color:#334155,rx:5px,ry:5px;
 
-    %% 1. 边界接入 (左列)
-    subgraph INGRESS ["1. 边界接入入口"]
-        direction TB
-        USER["游客 / 管理员"]:::client
-        API["Caddy 网关 ➔ Spring Boot API<br/>(43 端点 · Java 21)"]:::app
-        USER --> API
-    end
+    %% 边界接入
+    USER["游客 / 管理员"]:::client
+    API["Caddy 网关 ➔ Spring Boot API<br/>(43 端点 · Java 21)"]:::app
 
-    %% 2. 分流中枢 (中间列：双擎并排)
-    subgraph ENGINE ["2. 高并发分流与削峰中枢"]
-        direction TB
-        subgraph G_REDIS ["Redis 7 (原子预占引擎)"]
-            REDIS_NODE["Lua 脚本集 (×6) · 桶扣减 · 限流<br/>occupy 满载荷 · pending ZSet"]:::redis
-        end
+    %% 中间件分流
+    LUA_ENGINE["Redis 7 (原子预占引擎)<br/>Lua 脚本集 (×6) · 桶扣减 · occupy · pending"]:::redis
+    MQ_ENGINE["RocketMQ 5.5 (削峰落库)<br/>Topic: reservation-created ➔ 异步消费者"]:::mq
 
-        subgraph G_MQ ["RocketMQ 5.5 (削峰落库)"]
-            MQ_NODE["Topic: reservation-created<br/>五阶段异步批量落库 · 补偿回滚"]:::mq
-        end
-    end
+    %% 持久化与对账
+    JOB_NODE["定时调度 (16 任务 · 四类对账)"]:::app
+    DB_NODE[("MySQL 8 (多数据源)<br/>ds0/ds1 分库 · single 路由审计")]:::db
 
-    %% 3. 数据与对账 (右列)
-    subgraph STORAGE ["3. 持久化与对账闭环"]
-        direction TB
-        DB_NODE[("MySQL 8 (多数据源)<br/>ds0/ds1 分库 · single 路由审计")]:::db
-        JOB_NODE["定时调度 (16 任务 · 四类对账)"]:::app
-    end
-
-    %% 纯横向极简推进 (高度缩减 65%！)
-    API -->|"2 RTT 预占"| G_REDIS
-    API -->|"异步削峰"| G_MQ
-
-    G_REDIS -->|"对账巡检"| JOB_NODE
-    G_MQ -->|"批量落库"| DB_NODE
+    %% 流转走向 (纯横向极简无框)
+    USER --> API
+    API -->|"2 RTT 预占"| LUA_ENGINE
+    API -->|"异步削峰"| MQ_ENGINE
+    LUA_ENGINE -->|"对账巡检"| JOB_NODE
+    MQ_ENGINE -->|"批量落库"| DB_NODE
     JOB_NODE -->|"核验审计"| DB_NODE
-
-    style INGRESS fill:#ffffff,stroke:#d0d7de,stroke-width:1px
-    style ENGINE fill:#ffffff,stroke:#d0d7de,stroke-width:1px
-    style G_REDIS fill:#ffffff,stroke:#f85149,stroke-width:1.5px
-    style G_MQ fill:#ffffff,stroke:#d4a72c,stroke-width:1.5px
-    style STORAGE fill:#ffffff,stroke:#d0d7de,stroke-width:1px
 ```
 
 抢号请求只经过 Caddy → API → Redis 两次 round-trip 即返回;落库由消费者异步完成,
@@ -229,35 +206,31 @@ flowchart LR
     classDef asyncStage fill:#e1f5fe,stroke:#0288d1,stroke-width:1.5px,color:#01579b,rx:4px,ry:4px;
 
     %% 阶段一：前置准入
-    subgraph P1 ["① JVM 前置只读准入"]
-        direction TB
-        S1["元数据读取 (HGETALL)"] --> C1{"时效与放号校验"}:::decision
-        C1 -->|通过| R1["分桶路由计算"]
-        C1 -->|未过| E1["拦截 (404/倒计时/过期)"]:::reject
-    end
+    ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'edgeLabelBackground': '#ffffff', 'mainBkg': '#ffffff', 'lineColor': '#64748b' }}}%%
+flowchart LR
+    classDef default fill:#ffffff,stroke:#334155,stroke-width:1.5px,color:#0f172a,rx:4px,ry:4px;
+    classDef decision fill:#ffffff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af,rx:4px,ry:4px;
+    classDef reject fill:#ffffff,stroke:#ef4444,stroke-width:1.5px,color:#b91c1c,rx:4px,ry:4px;
+    classDef success fill:#ffffff,stroke:#10b981,stroke-width:1.5px,color:#047857,rx:4px,ry:4px;
+    classDef asyncStage fill:#ffffff,stroke:#0284c7,stroke-width:1.5px,color:#0369a1,rx:4px,ry:4px;
+
+    %% 阶段一：前置准入
+    S1["元数据读取 (HGETALL)"]:::default --> C1{"时效与放号校验"}:::decision
+    C1 -->|通过| R1["分桶路由计算"]:::default
+    C1 -->|未通过| E1["拦截 (404/倒计时/过期)"]:::reject
 
     %% 阶段二：Lua 原子判扣
-    subgraph P2 ["② Redis 7 grab.lua 原子判扣内核"]
-        direction TB
-        L2["双维限流 ➔ SETNX 判重 ➔ 主桶/借桶扣减"]:::decision
-        L2 -->|扣减成功| OK2["扣减成功 · 返 1 (写 occupy + ZSet)"]:::success
-        L2 -->|超限/重复/售罄| X2["熔断退出 (返 -2 / -1 / 0)"]:::reject
-    end
+    L2["双维限流 ➔ SETNX 判重 ➔ 主桶/借桶扣减"]:::decision
+    L2 -->|扣减成功| OK2["扣减成功 · 返 1 (写 occupy + ZSet)"]:::success
+    L2 -->|超限/重复/售罄| X2["熔断退出 (返 -2 / -1 / 0)"]:::reject
 
     %% 阶段三：异步落库
-    subgraph P3 ["③ MQ 异步落库闭环"]
-        direction TB
-        M3["Topic: reservation-created<br/>同步投递事务消息"]:::asyncStage
-        M3 --> C3["消费者五阶段落库 (ds0/ds1)"]:::asyncStage
-    end
+    M3["Topic: reservation-created 事务消息"]:::asyncStage --> C3["消费者五阶段落库 (ds0/ds1)"]:::asyncStage
 
-    %% 纯横向 3 阶段主干贯通 (高度仅 220px！)
+    %% 阶段主干贯通
     R1 ==>|"单次 RTT"| L2
     OK2 ==>|"预占成功"| M3
-
-    style P1 fill:#ffffff,stroke:#d0d7de,stroke-width:1px
-    style P2 fill:#ffffff,stroke:#d4a72c,stroke-width:1.5px
-    style P3 fill:#ffffff,stroke:#0288d1,stroke-width:1.5px
 ```
 
 
