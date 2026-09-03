@@ -11,6 +11,9 @@
 stock decrement, asynchronous persistence via MQ, consistency closed by
 compensation and four reconciliation jobs.*
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-reservex.stylex.cyou-10b981?style=for-the-badge&logo=vercel)](https://reservex.stylex.cyou)
+[![Console Repo](https://img.shields.io/badge/Console%20Repo-s1oopX%2Freservex--console-18181b?style=for-the-badge&logo=github)](https://github.com/s1oopX/reservex-console)
+
 [![CI](https://github.com/s1oopX/ReserveX/actions/workflows/ci.yml/badge.svg)](https://github.com/s1oopX/ReserveX/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://openjdk.org/projects/jdk/21/)
@@ -18,6 +21,16 @@ compensation and four reconciliation jobs.*
 [![Tests](https://img.shields.io/badge/tests-221%20passing-brightgreen.svg)](#七工程验证)
 
 </div>
+
+> ⚡ **在线交互式架构观测台已上线 (Live Architecture Console)**：  
+> 无需本地拉取 Docker 与中间件，即可在浏览器中通过 100% 映射真实后端契约的高精度内存状态机，在线沉浸式演练核心架构决策：  
+> 👉 **[https://reservex.stylex.cyou](https://reservex.stylex.cyou)**  
+> 
+> * 🎯 **热路径**：SET NX 实名防刷演练（0 脏数据快速拦截）、5 桶 `(b_no+i)%5` 顺时针环形借桶与 0 超卖观测；
+> * ⏳ **温路径**：T=1.2ms (Redis) vs T=160ms (MySQL) 在途错位窗口期分析、`occupy` 无 TTL 证据链；
+> * 🛡️ **冷路径**：四类对账 SQL 审计工作台、故障注入（单边库存悬挂 / MQ 丢包）与一键补偿自愈；
+> * 📊 **性能凭据**：JMeter 27 万样本实测报告（1,520 QPS、P99 < 26.4ms）与 4GB VPS Linux 内核 OOM 防御拓扑。
+
 
 ## 技术栈
 
